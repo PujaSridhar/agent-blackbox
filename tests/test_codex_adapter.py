@@ -200,3 +200,19 @@ def test_relative_and_absolute_paths_are_matched():
     # when the trailing components line up.
     assert not paths_overlap("/repo/a/app.js", "/repo/b/app.js")
     assert paths_overlap("/repo/a/app.js", "a/app.js")
+
+
+def test_error_clusters_separate_programs_on_codex(codex_path):
+    """A failure identity includes what ran. Keying that to Claude Code's
+    spelling of a shell tool silently disabled it on Codex traces."""
+    from blackbox.toolinfo import program_hint
+
+    assert program_hint("exec_command", {"cmd": "cd /repo && npm run build"}) == "npm build"
+    assert program_hint("Bash", {"command": "cd /repo && npm run build"}) == "npm build"
+    assert program_hint("apply_patch", {"input": "*** Begin Patch"}) == ""
+
+    analysis = analyze(codex_path)
+    clusters = [f for f in analysis.findings if f.detector == "error_cluster"]
+    assert clusters
+    # The label names the program, not just the tool.
+    assert any("npm build" in f.metrics["tool"] for f in clusters)

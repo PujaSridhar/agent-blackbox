@@ -186,6 +186,12 @@ def is_declined(output: str) -> bool:
 
 # The first meaningful token of a shell command, used to keep unrelated
 # failures in separate clusters even when their error text collapses.
+# Every tool that runs a shell command, whichever agent issued it. Codex
+# calls it exec_command and names the argument cmd; Claude Code calls it Bash
+# and names it command. Anything keyed to one spelling silently does nothing
+# on the other agent's traces.
+SHELL_TOOLS = frozenset({"Bash", "exec_command"})
+
 _SHELL_NOISE = frozenset(
     {"cd", "sudo", "env", "time", "nohup", "exec", "command", "builtin", "nice", "xargs", "then", "do"}
 )
@@ -207,9 +213,9 @@ def program_hint(tool_name: str | None, tool_input: dict[str, Any]) -> str:
     Shell plumbing is skipped: `cd /repo && pytest` is a pytest failure, not a
     cd failure.
     """
-    if tool_name != "Bash":
+    if tool_name not in SHELL_TOOLS:
         return ""
-    command = tool_input.get("command")
+    command = tool_input.get("command") or tool_input.get("cmd")
     if not isinstance(command, str):
         return ""
 
@@ -277,7 +283,7 @@ def shell_read_paths(tool_name: str | None, tool_input: dict[str, Any]) -> list[
     Deliberately permissive: over-counting a read only ever suppresses a
     blind-edit report, while under-counting invents one.
     """
-    if tool_name not in {"Bash", "exec_command"}:
+    if tool_name not in SHELL_TOOLS:
         return []
     command = tool_input.get("command") or tool_input.get("cmd")
     if not isinstance(command, str):

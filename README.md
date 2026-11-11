@@ -206,8 +206,8 @@ SPEND  $1,029.85 across 37 run(s)
   tool failure rate 5.0% (190 failed)
 
 MOST REWRITTEN FILES
-   39x  …/scratchpad/Puja Sridhar SDE/main.tex
-   16x  /Users/me/marimo/marimo/_data/get_datasets.py
+   39x  /Users/me/reports/summary/main.tex
+   16x  /Users/me/dataplane/loaders/get_datasets.py
 ```
 
 Outputs:
