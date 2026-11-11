@@ -58,6 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=20, help="rows for 'ls' (default 20)")
     parser.add_argument("--replay", metavar="DB", help="re-derive the report from a stored run")
     parser.add_argument("--adapter", help="force an adapter instead of sniffing")
+    parser.add_argument(
+        "--prices",
+        metavar="FILE",
+        help=(
+            "JSON of {model: {input, output, cache_read?}} in dollars per million "
+            "tokens, for models this build does not ship rates for"
+        ),
+    )
 
     out = parser.add_argument_group("output")
     out.add_argument("--html", metavar="PATH", help="write a self-contained HTML report")
@@ -105,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.trace == "ls":
-        return _list_sessions(args.root or discover.DEFAULT_ROOT, args.limit)
+        return _list_sessions(args.root, args.limit)
     if args.trace and args.replay:
         print("error: pass a trace file or --replay, not both", file=sys.stderr)
         return 2
@@ -122,8 +130,17 @@ def main(argv: list[str] | None = None) -> int:
         bloat_min_usd=args.bloat_min_usd,
     )
 
+    overrides = {}
+    if args.prices:
+        try:
+            with open(args.prices, "r", encoding="utf-8") as fh:
+                overrides = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"error: could not read --prices {args.prices}: {exc}", file=sys.stderr)
+            return 2
+
     if args.trace == "scan":
-        return _scan(args.root or discover.DEFAULT_ROOT, config, args)
+        return _scan(args.root, config, args, overrides)
 
     target = args.trace
     if not target and not args.replay:
@@ -140,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"using latest session for this directory: {os.path.basename(target)}")
 
     if target and os.path.isdir(target):
-        return _aggregate(discover.traces_in(target), config, args, title=target)
+        return _aggregate(discover.traces_in(target), config, args, title=target, overrides=overrides)
 
     try:
         if args.replay:
@@ -154,7 +171,9 @@ def main(argv: list[str] | None = None) -> int:
             if not os.path.exists(target):
                 print(f"error: no such file: {target}", file=sys.stderr)
                 return 1
-            analysis = analyze(target, config=config, adapter=args.adapter)
+            analysis = analyze(
+                target, config=config, adapter=args.adapter, price_overrides=overrides
+            )
     except NoAdapterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -185,24 +204,27 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _list_sessions(root: str, limit: int) -> int:
+def _list_sessions(root: str | None, limit: int) -> int:
     import datetime
 
     sessions = discover.recent_sessions(root, limit)
     if not sessions:
-        print(f"no transcripts found under {root}", file=sys.stderr)
+        where = root or ", ".join(discover.all_roots()) or "any known location"
+        print(f"no transcripts found under {where}", file=sys.stderr)
         return 1
     print(f"{'modified':<17}{'size':>9}  {'session':<14} project")
     for session in sessions:
         when = datetime.datetime.fromtimestamp(session.modified).strftime("%Y-%m-%d %H:%M")
         print(
             f"{when:<17}{session.size / 1024:>8.0f}K  "
-            f"{session.session_id[:12]:<14} {discover.decode_project(session.project)}"
+            f"{session.session_id[:12]:<14} {session.label}"
         )
     return 0
 
 
-def _aggregate(paths: list[str], config: Config, args, title: str) -> int:
+def _aggregate(
+    paths: list[str], config: Config, args, title: str, overrides: dict | None = None
+) -> int:
     from blackbox import aggregate
     from blackbox.report import text as text_report_mod
 
@@ -210,7 +232,7 @@ def _aggregate(paths: list[str], config: Config, args, title: str) -> int:
         print(f"no traces found under {title}", file=sys.stderr)
         return 1
 
-    corpus = aggregate.load(paths, config=config)
+    corpus = aggregate.load(paths, config=config, price_overrides=overrides)
     if not corpus.runs:
         print("no traces could be read", file=sys.stderr)
         return 1
@@ -228,8 +250,20 @@ def _aggregate(paths: list[str], config: Config, args, title: str) -> int:
     return 0
 
 
-def _scan(root: str, config: Config, args) -> int:
-    return _aggregate(discover.traces_in(root), config, args, title=f"every run under {root}")
+def _scan(root: str | None, config: Config, args, overrides: dict) -> int:
+    if root:
+        roots = [root]
+        title = f"every run under {root}"
+    else:
+        roots = discover.all_roots()
+        title = "every run on this machine"
+        if not roots:
+            print("no transcript directories found", file=sys.stderr)
+            return 1
+    paths: list[str] = []
+    for base in roots:
+        paths.extend(discover.traces_in(base))
+    return _aggregate(paths, config, args, title=title, overrides=overrides)
 
 
 def _verify(analysis) -> int:

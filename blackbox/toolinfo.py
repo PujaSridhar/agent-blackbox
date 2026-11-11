@@ -28,15 +28,63 @@ WRITE_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
 EDIT_IN_PLACE_TOOLS = frozenset({"Edit", "NotebookEdit"})
 
 
-def target_path(tool_name: str | None, tool_input: dict[str, Any]) -> str | None:
-    """Return the file path a call operates on, or ``None`` if not applicable."""
+# How a call touches a file. ``read`` observes it, ``write`` replaces or
+# creates it (so the agent knows the contents afterwards either way), ``edit``
+# changes it in place (so the agent needs to have known them beforehand).
+READ = "read"
+WRITE = "write"
+EDIT = "edit"
+
+# Some tools touch several files in one call -- a patch tool is the obvious
+# case. The adapter normalises those into this list so the detectors never
+# have to know which agent produced the trace.
+MULTI_FILE_KEY = "files"
+
+
+def file_operations(tool_name: str | None, tool_input: dict[str, Any]) -> list[tuple[str, str]]:
+    """Every (path, kind) this call touches.
+
+    Returning a list rather than one path is what lets a patch-style tool --
+    one call that adds two files and updates a third -- be understood by the
+    same detectors that handle single-file edits.
+    """
     if not tool_name:
-        return None
+        return []
+
+    entries = tool_input.get(MULTI_FILE_KEY)
+    if isinstance(entries, list):
+        operations = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            kind = entry.get("op")
+            if isinstance(path, str) and path and kind in (READ, WRITE, EDIT):
+                operations.append((path, kind))
+        return operations
+
+    path = None
     for key in PATH_KEYS.get(tool_name, ()):
         value = tool_input.get(key)
         if isinstance(value, str) and value:
-            return value
-    return None
+            path = value
+            break
+    if path is None:
+        return []
+
+    if tool_name in READ_TOOLS:
+        return [(path, READ)]
+    if tool_name in EDIT_IN_PLACE_TOOLS:
+        return [(path, EDIT)]
+    if tool_name in WRITE_TOOLS:
+        return [(path, WRITE)]
+    return []
+
+
+def target_path(tool_name: str | None, tool_input: dict[str, Any]) -> str | None:
+    """The first file path a call operates on, or ``None``."""
+    operations = file_operations(tool_name, tool_input)
+    return operations[0][0] if operations else None
 
 
 def is_read(tool_name: str | None) -> bool:
@@ -188,3 +236,95 @@ def program_hint(tool_name: str | None, tool_input: dict[str, Any]) -> str:
         else:
             continue
     return fallback
+
+
+# Agents read files through the shell as often as through a file tool --
+# `sed -n '1,200p' src/app.js` is a read by any sensible reading. Missing that
+# made every later edit of such a file look blind: on the Codex corpus, 84 of
+# 84 blind-edit findings had a shell read of the same file beforehand.
+#
+# These paths deliberately do NOT become canonical read operations. A shell
+# read returns a slice, formatted however the command chose, so hashing it and
+# comparing against a later read would invent stale-read findings. They are
+# used only to answer "has this agent seen this file at all?".
+SHELL_READ_COMMANDS = frozenset(
+    {"cat", "head", "tail", "sed", "nl", "less", "more", "bat", "view", "rg", "grep", "awk"}
+)
+
+_SHELL_SPLIT = re.compile(r"&&|\|\||[;|\n]")
+
+
+# A filename, possibly with directories. Deliberately excludes things that
+# are arguments rather than paths: sed scripts (`1,200p`), line numbers, and
+# anything with shell metacharacters.
+_PATHLIKE = re.compile(r"[A-Za-z_][A-Za-z0-9._\-/]*\Z")
+
+# These take a pattern before the filenames, which must not be read as a path.
+_PATTERN_FIRST = frozenset({"rg", "grep", "awk"})
+
+
+def _looks_like_path(token: str) -> bool:
+    if not token or token.startswith("-"):
+        return False
+    if token in {".", "..", "*"}:
+        return False
+    return bool(_PATHLIKE.match(token))
+
+
+def shell_read_paths(tool_name: str | None, tool_input: dict[str, Any]) -> list[str]:
+    """File paths a shell command appears to read.
+
+    Deliberately permissive: over-counting a read only ever suppresses a
+    blind-edit report, while under-counting invents one.
+    """
+    if tool_name not in {"Bash", "exec_command"}:
+        return []
+    command = tool_input.get("command") or tool_input.get("cmd")
+    if not isinstance(command, str):
+        return []
+
+    paths: list[str] = []
+    for segment in _SHELL_SPLIT.split(command):
+        tokens = segment.split()
+        if not tokens:
+            continue
+        program = None
+        for token in tokens:
+            cleaned = token.strip("\\\"'`()$&|;")
+            if not cleaned or "=" in cleaned or cleaned.startswith("-"):
+                continue
+            program = cleaned.split("/")[-1]
+            break
+        if program not in SHELL_READ_COMMANDS:
+            continue
+        skip_pattern = program in _PATTERN_FIRST
+        started = False
+        for token in tokens:
+            cleaned = token.strip("\\\"'`()$&|;<>")
+            if not started:
+                # Skip forward to just past the command name itself.
+                started = cleaned.split("/")[-1] == program
+                continue
+            if cleaned.startswith("-") or "=" in cleaned:
+                continue
+            if skip_pattern:
+                skip_pattern = False  # that was the search pattern, not a file
+                continue
+            if _looks_like_path(cleaned):
+                paths.append(cleaned)
+    return paths
+
+
+def paths_overlap(a: str, b: str) -> bool:
+    """True when two paths plausibly name the same file.
+
+    A shell command usually names a file relative to the working directory
+    while a patch names it absolutely, so the comparison is on trailing path
+    components rather than on the strings.
+    """
+    left = [part for part in a.split("/") if part and part != "."]
+    right = [part for part in b.split("/") if part and part != "."]
+    if not left or not right:
+        return False
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    return longer[-len(shorter):] == shorter

@@ -16,7 +16,7 @@ from __future__ import annotations
 from blackbox.detectors.base import HIGH, LOW, MEDIUM, Config, Finding
 from blackbox.events import TOOL_CALL
 from blackbox.graph import Graph
-from blackbox.toolinfo import is_write, target_path
+from blackbox import toolinfo
 
 NAME = "thrash"
 
@@ -28,11 +28,9 @@ def run(graph: Graph, config: Config) -> list[Finding]:
         calls = graph.tool_calls(branch.name)
         positions: dict[str, list[int]] = {}
         for index, call in enumerate(calls):
-            if not is_write(call.tool_name):
-                continue
-            path = target_path(call.tool_name, call.tool_input)
-            if path:
-                positions.setdefault(path, []).append(index)
+            for path, kind in toolinfo.file_operations(call.tool_name, call.tool_input):
+                if kind in (toolinfo.WRITE, toolinfo.EDIT):
+                    positions.setdefault(path, []).append(index)
 
         for path in sorted(positions):
             for cluster in _cluster(positions[path], config.thrash_window):

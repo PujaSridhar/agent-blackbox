@@ -15,9 +15,16 @@ Two honesty constraints, both surfaced in the finding text:
 * Token counts are **estimated** from character length (~4 chars/token). This
   module does not tokenise, and a wrong-looking precise number would be worse
   than an openly approximate one.
-* Context editing and compaction can evict a result early, in which case the
-  true downstream cost is lower. The estimate is an upper bound on a context
-  that is never cleared.
+* Where a trace records a compaction boundary, counting stops there: a result
+  dumped before the context was summarised is not re-sent afterwards. Where a
+  trace records no such boundary, the figure is an upper bound on a context
+  that is never cleared, and silent context editing would lower it.
+
+Each downstream turn is priced at **its own** model's cache-read rate, not at
+one rate for the whole run. A run that hands reading to a cheap subagent and
+reasons on an expensive model is exactly the case where a single blended rate
+is wrong in both directions, and it is also the case where someone is most
+likely to be looking.
 """
 
 from __future__ import annotations
@@ -40,21 +47,27 @@ def _dominant_model(graph: Graph) -> str | None:
 
 
 def run(graph: Graph, config: Config) -> list[Finding]:
-    model = _dominant_model(graph)
-    price = lookup(model)
-    if price is None:
-        # Without a rate there is no honest dollar figure to report.
-        return []
-    read_rate = price.read_rate()
-
     findings: list[Finding] = []
 
     for branch in graph.branches:
         branch_events = [e for e in graph.events if e.branch == branch.name]
-        turn_seqs = [
-            e.seq for e in branch_events if e.kind == ASSISTANT_MESSAGE and not e.usage.is_empty()
-        ]
-        if not turn_seqs:
+        # (seq, cache-read rate) for every billable turn in this branch. A turn
+        # on an unpriced model contributes nothing rather than a guessed rate,
+        # which makes the estimate a floor instead of a fiction.
+        turns: list[tuple[int, float]] = []
+        unpriced_turns = 0
+        compaction_seqs = sorted(
+            e.seq for e in branch_events if "compaction" in e.flags
+        )
+        for event in branch_events:
+            if event.kind != ASSISTANT_MESSAGE or event.usage.is_empty():
+                continue
+            price = lookup(event.model)
+            if price is None:
+                unpriced_turns += 1
+                continue
+            turns.append((event.seq, price.read_rate()))
+        if not turns:
             continue
 
         for ev in branch_events:
@@ -64,11 +77,19 @@ def run(graph: Graph, config: Config) -> list[Finding]:
             if est_tokens < config.bloat_min_tokens:
                 continue
 
-            downstream_turns = sum(1 for seq in turn_seqs if seq > ev.seq)
+            # A result stops being re-sent once the context is compacted.
+            horizon = next((s for s in compaction_seqs if s > ev.seq), None)
+            downstream = [
+                rate
+                for seq, rate in turns
+                if seq > ev.seq and (horizon is None or seq < horizon)
+            ]
+            downstream_turns = len(downstream)
             if downstream_turns <= 0:
                 continue
 
-            est_usd = est_tokens / 1e6 * read_rate * downstream_turns
+            # Each later turn re-reads this result at that turn's own rate.
+            est_usd = est_tokens / 1e6 * sum(downstream)
             if est_usd < config.bloat_min_usd:
                 continue
 
@@ -91,9 +112,10 @@ def run(graph: Graph, config: Config) -> list[Finding]:
                         f"This {tool} result is roughly {est_tokens:,} tokens and landed "
                         f"with {downstream_turns} model turns still to come, so it was "
                         f"re-sent as cached input about that many times — an estimated "
-                        f"${est_usd:,.2f} after the fact. Token counts are estimated from "
-                        f"length, and context editing or compaction would lower the real "
-                        f"figure, so treat this as an upper bound."
+                        f"${est_usd:,.2f} after the fact, each turn priced at its own "
+                        f"model's cache-read rate. Token counts are estimated from length, "
+                        f"and context editing or compaction would lower the real figure, "
+                        f"so treat this as an upper bound."
                     ),
                     key=f"{ev.seq:08d}",
                     branch=branch.name,
@@ -104,6 +126,8 @@ def run(graph: Graph, config: Config) -> list[Finding]:
                         "est_tokens": est_tokens,
                         "downstream_turns": downstream_turns,
                         "est_downstream_usd": round(est_usd, 4),
+                        "unpriced_downstream_turns": unpriced_turns,
+                        "compaction_bounded": horizon is not None,
                         "seq": ev.seq,
                         "estimated": True,
                     },

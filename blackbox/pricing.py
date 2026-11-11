@@ -77,6 +77,50 @@ PRICES: dict[str, Price] = {
 FREE_MODELS = {"<synthetic>"}
 
 
+# Rates supplied at runtime, for models this table does not ship. Kept
+# separate from PRICES so it is always clear which numbers came from the user
+# and which were verified here.
+OVERRIDES: dict[str, Price] = {}
+
+
+def set_overrides(mapping: dict[str, dict[str, float]] | None) -> dict[str, dict[str, float]]:
+    """Install user-supplied rates. Returns what was applied, for the record.
+
+    This exists because guessing is not an option. Rates for models outside
+    this table -- another vendor's, or one released after it was written --
+    have to come from whoever is running the tool, and then travel with the
+    stored run so a replay prices it identically.
+    """
+    OVERRIDES.clear()
+    applied: dict[str, dict[str, float]] = {}
+    for model, entry in sorted((mapping or {}).items()):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            price = Price(
+                input=float(entry["input"]),
+                output=float(entry["output"]),
+                cache_read=_opt(entry.get("cache_read")),
+                cache_write_5m=_opt(entry.get("cache_write_5m")),
+                cache_write_1h=_opt(entry.get("cache_write_1h")),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        OVERRIDES[model] = price
+        applied[model] = {
+            "input": price.input,
+            "output": price.output,
+            "cache_read": price.cache_read,
+            "cache_write_5m": price.cache_write_5m,
+            "cache_write_1h": price.cache_write_1h,
+        }
+    return applied
+
+
+def _opt(value) -> float | None:
+    return None if value is None else float(value)
+
+
 def lookup(model: str | None) -> Price | None:
     """Return the price for ``model``, or ``None`` when it is not in the table.
 
@@ -86,6 +130,8 @@ def lookup(model: str | None) -> Price | None:
     """
     if not model:
         return None
+    if model in OVERRIDES:
+        return OVERRIDES[model]
     if model in FREE_MODELS:
         return Price(input=0.0, output=0.0, cache_read=0.0, cache_write_5m=0.0, cache_write_1h=0.0)
     return PRICES.get(model)

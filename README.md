@@ -109,7 +109,7 @@ Six detectors, all pure functions of the graph. No model decides anything.
 | `retry_loop` | the same acting call repeated with identical input inside a sliding window | observation and progress tools — eight identical screenshots is polling, and advancing a task list ten times is bookkeeping |
 | `stall` | wall-clock gap between a call and its result | interrupted calls; tools that exist to wait for a human; pauses long enough to be a person away, reported separately as idle gaps |
 | `error_cluster` | failed calls grouped by normalised error shape, keyed by the program that ran | bare `Exit code 1` headers; calls a human declined |
-| `contradiction` | the same *region* of a file re-read with different bytes and no write between; a file edited in place that was never read **or written** | paging through a file with `offset`/`limit`; editing a file the agent created itself |
+| `contradiction` | the same *region* of a file re-read with different bytes and no write between; a file edited in place the agent has never seen | paging through a file with `offset`/`limit`; editing a file the agent created itself; editing a file it read through the shell |
 | `thrash` | several writes to one file inside a sliding window | the same number of writes spread across a long session |
 | `context_bloat` | a large tool result, priced by the turns that carried it afterwards | runs with no model price available — no rate, no claim |
 
@@ -128,6 +128,13 @@ disappeared were all wrong:
 * Four "stalls" were `AskUserQuestion` waiting for a human to type.
 * Two "tool failures" were a human declining a call.
 * Files were reported as thrashed for three edits across six hours.
+
+Adding the second adapter found one more of exactly the same kind:
+
+* 84 of 84 "blind edits" on the Codex corpus had a `sed -n '1,200p' <file>`
+  before them. That agent inspects files through the shell rather than a file
+  tool, and a shell read is a read. Counting it dropped contradictions across
+  both corpora from 92 to 14.
 
 Each of those has a regression test with the real-world case written into it.
 
@@ -148,7 +155,8 @@ opinion. This one reproduces exactly:
 
 `tests/test_determinism.py` enforces all of it, including a test that
 monkeypatches `socket` to prove the analysis path cannot open a connection.
-Across 24 real transcripts, all 24 replay byte-identical.
+Across 37 real transcripts from two different agents, all 37 replay
+byte-identical.
 
 Because the store is just DuckDB, it is also the query interface:
 
@@ -180,17 +188,22 @@ blackbox ~/.claude/projects/app/ # every run for one project
 blackbox run.jsonl               # one specific trace
 ```
 
+Discovery covers both agents: Claude Code encodes the project into the
+directory name, Codex records it inside the file, and `ls` and `scan` read
+whichever applies. Symlinked paths are resolved both ways, because on macOS
+`/tmp` and `/private/tmp` encode differently.
+
 `scan` is the one to try first — it reads every transcript on the machine,
 offline, and tells you what your agent gets wrong *habitually*:
 
 ```
-AGENT BLACK BOX   every run under ~/.claude/projects
-  24 run(s) · 1,935 tool calls · 198 findings · 22.1h active
+AGENT BLACK BOX   every run on this machine
+  37 run(s) · 3,811 tool calls · 300 findings · 34.7h active
 
-SPEND  $993.14 across 24 run(s)
-  at least $88.64 (8.9%) on work that did not advance the task
-  cache hit rate 95.4% of billed input · 35,577,142 tokens of 1-hour cache writes
-  tool failure rate 4.3% (83 failed)
+SPEND  $1,029.85 across 37 run(s)
+  at least $88.64 (8.6%) on work that did not advance the task
+  cache hit rate 95.2% of billed input · 37,212,551 tokens of 1-hour cache writes
+  tool failure rate 5.0% (190 failed)
 
 MOST REWRITTEN FILES
    39x  …/scratchpad/Puja Sridhar SDE/main.tex
@@ -215,16 +228,46 @@ replay.
 
 ---
 
-## Adding a format
+## Two agents, one model
 
-`blackbox/adapters/` is the only place that knows a vendor's log format.
-An adapter exposes `NAME`, `sniff(path)` and `parse(path) -> Trace`, and emits
-canonical `Event` objects. Nothing downstream changes.
+`blackbox/adapters/` is the only place that knows a vendor's log format. An
+adapter exposes `NAME`, `sniff(path)` and `parse(path) -> Trace`, and emits
+canonical `Event` objects.
 
-This matters because **the Claude Code transcript format is undocumented and
-will drift.** That is not a reason to avoid reading it; it is a reason to put
-the churn behind one boundary. Unrecognised row types degrade to `meta` events
-rather than crashing, so a new row type upstream costs fidelity, never a run.
+That boundary was an assertion until a second format tested it. **Adding
+OpenAI Codex CLI support took one adapter file and no change to the graph, the
+cost engine, or any detector** — but it did force two genuine generalisations,
+which is the point of doing it:
+
+| Codex does this | so the canonical model gained |
+|---|---|
+| no parent pointers; a flat sequence | the spine is rebuilt from `call_id` and turn order, shared by both adapters |
+| cumulative token counts (summing per-request usage over-counts by ~5%) | per-turn usage is the delta between readings |
+| `input_tokens` already includes cached ones | fresh input is the difference, and no cache-write tier is invented |
+| one `apply_patch` edits several files | file operations are a list of `(path, kind)`, so `thrash` and `contradiction` work on patch tools unchanged |
+| records a compaction boundary | `context_bloat` stops counting there instead of over-estimating |
+
+Both formats are undocumented and will drift. That is not a reason to avoid
+reading them; it is a reason to put the churn behind one boundary.
+Unrecognised row types degrade to `meta` events rather than crashing, so a new
+row type upstream costs fidelity, never a run.
+
+### Prices for models this build does not ship
+
+Rates are only included where they could be verified. Rather than guess at
+another vendor's pricing, supply it:
+
+```bash
+blackbox run.jsonl --prices rates.json
+```
+
+```json
+{ "gpt-5.4": { "input": 1.25, "output": 10.0, "cache_read": 0.125 } }
+```
+
+*(Illustrative values — put your own in.)* Supplied rates are stored with the
+run and reapplied on replay, so a stored analysis prices identically forever.
+Without them the tokens are still counted and the total is marked a floor.
 
 ---
 
@@ -233,8 +276,14 @@ rather than crashing, so a new row type upstream costs fidelity, never a run.
 Stated plainly, because a tool that overclaims about trustworthiness has
 defeated itself:
 
-* **One adapter so far.** Claude Code only. The canonical model was designed
-  against one format, and a second adapter is what will prove it general.
+* **Two adapters.** Claude Code and OpenAI Codex CLI. A third would test the
+  model further; two is enough to show it is not one vendor's shape.
+* **Only Anthropic rates ship.** Other vendors' models are reported as
+  unpriced unless you supply rates with `--prices`.
+* **Shell reads are matched loosely.** A file read with `cat` or `sed` is
+  matched to an edit by trailing path components, because one is usually
+  relative and the other absolute. The bias is deliberate: over-matching
+  suppresses a blind-edit report, under-matching invents one.
 * **`context_bloat` is an estimate.** Token counts are derived from character
   length, and context editing or compaction would evict a result early. It is
   an upper bound on a context that is never cleared, and it is labelled as one
@@ -261,11 +310,16 @@ pytest -q
 python tests/fixtures/make_fixture.py   # regenerate the synthetic trace
 ```
 
-The fixture is hand-written rather than copied from a real session: every
+```bash
+python tests/fixtures/make_codex_fixture.py   # and the Codex one
+```
+
+The fixtures are hand-written rather than copied from real sessions: every
 detector has a case planted for it, *and every false positive has a negative
 case planted next to it* — a file written then edited, a file read in two
-regions, a question a human took four minutes to answer. A fixture nobody can
-read is a fixture nobody trusts.
+regions, a file inspected with `sed`, a question a human took four minutes to
+answer, a token count reported twice. A fixture nobody can read is a fixture
+nobody trusts.
 
 ## License
 

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from blackbox.adapters import claude_code
+from blackbox.adapters import claude_code, codex
 from blackbox.adapters.base import Trace
 
-ADAPTERS = (claude_code,)
+ADAPTERS = (claude_code, codex)
 
 
 class NoAdapterError(RuntimeError):

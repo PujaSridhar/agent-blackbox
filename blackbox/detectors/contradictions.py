@@ -20,6 +20,9 @@ versions were wrong essentially every time:
   contents as surely as if it had read them, so a later in-place edit is not
   blind. Without this, every file an agent builds from scratch and then tweaks
   is reported as a blind edit.
+* **Reading through the shell counts.** ``sed -n '1,200p' src/app.js`` is a
+  read. Ignoring it reported 84 of 84 Codex blind edits wrongly, because that
+  agent inspects files with shell commands rather than a file tool.
 """
 
 from __future__ import annotations
@@ -29,13 +32,13 @@ from dataclasses import dataclass
 from blackbox.detectors.base import HIGH, MEDIUM, Config, Finding
 from blackbox.events import TOOL_CALL
 from blackbox.graph import Graph
-from blackbox.toolinfo import is_edit_in_place, is_read, is_write, target_path
+from blackbox import toolinfo
 
 NAME = "contradiction"
 
-READ = "read"
-WRITE = "write"
-EDIT = "edit"
+READ = toolinfo.READ
+WRITE = toolinfo.WRITE
+EDIT = toolinfo.EDIT
 
 
 @dataclass(frozen=True)
@@ -57,31 +60,33 @@ def run(graph: Graph, config: Config) -> list[Finding]:
 
     for branch in graph.branches:
         history: dict[str, list[_Entry]] = {}
+        # (seq, path) for every file the agent inspected through a shell.
+        shell_seen: list[tuple[int, str]] = []
 
         for ev in graph.events:
             if ev.branch != branch.name or ev.kind != TOOL_CALL:
                 continue
-            path = target_path(ev.tool_name, ev.tool_input)
-            if not path:
-                continue
 
-            if is_read(ev.tool_name):
-                result = graph.result_for(ev)
-                if result is None:
-                    continue
-                history.setdefault(path, []).append(
-                    _Entry(ev.seq, READ, result.output_digest(), ev.uid, _region(ev.tool_input))
-                )
-            elif is_write(ev.tool_name):
-                kind = EDIT if is_edit_in_place(ev.tool_name) else WRITE
-                history.setdefault(path, []).append(
-                    _Entry(ev.seq, kind, "", ev.uid, (None, None))
-                )
+            for seen in toolinfo.shell_read_paths(ev.tool_name, ev.tool_input):
+                shell_seen.append((ev.seq, seen))
+
+            for path, kind in toolinfo.file_operations(ev.tool_name, ev.tool_input):
+                if kind == READ:
+                    result = graph.result_for(ev)
+                    if result is None:
+                        continue
+                    history.setdefault(path, []).append(
+                        _Entry(ev.seq, READ, result.output_digest(), ev.uid, _region(ev.tool_input))
+                    )
+                else:
+                    history.setdefault(path, []).append(
+                        _Entry(ev.seq, kind, "", ev.uid, (None, None))
+                    )
 
         for path in sorted(history):
             entries = history[path]
             findings.extend(_stale_reads(path, entries, branch.name))
-            findings.extend(_blind_edits(path, entries, branch.name))
+            findings.extend(_blind_edits(path, entries, branch.name, shell_seen))
 
     return findings
 
@@ -129,10 +134,19 @@ def _stale_reads(path: str, entries: list[_Entry], branch: str) -> list[Finding]
     return found
 
 
-def _blind_edits(path: str, entries: list[_Entry], branch: str) -> list[Finding]:
-    """An in-place edit of a file the agent has neither read nor written."""
+def _blind_edits(
+    path: str,
+    entries: list[_Entry],
+    branch: str,
+    shell_seen: list[tuple[int, str]],
+) -> list[Finding]:
+    """An in-place edit of a file the agent has not seen by any route."""
     knows = False
     for entry in entries:
+        if not knows and any(
+            seq < entry.seq and toolinfo.paths_overlap(path, seen) for seq, seen in shell_seen
+        ):
+            knows = True
         if entry.kind in (READ, WRITE):
             # Reading it or having authored it both count as knowing it.
             knows = True

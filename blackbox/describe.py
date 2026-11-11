@@ -11,6 +11,7 @@ never change the payload digest for a given input.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from blackbox.events import (
@@ -60,8 +61,20 @@ def headline_arg(tool_input: dict[str, Any]) -> str:
 def describe(event: Event) -> str:
     """A one-line, human-readable summary of what an event was."""
     if event.kind == TOOL_CALL:
-        arg = headline_arg(event.tool_input)
         name = event.tool_name or "tool"
+        # A call that touches several files is unreadable as raw input: show
+        # what it did to which files instead of the first 110 characters of a
+        # patch body.
+        operations = event.tool_input.get("files")
+        if isinstance(operations, list) and operations:
+            shown = ", ".join(
+                os.path.basename(str(entry.get("path", "?")))
+                for entry in operations[:3]
+                if isinstance(entry, dict)
+            )
+            extra = f" +{len(operations) - 3} more" if len(operations) > 3 else ""
+            return f"{name}: {len(operations)} file(s) — {shown}{extra}"
+        arg = headline_arg(event.tool_input)
         return f"{name}: {arg}" if arg else name
 
     if event.kind == TOOL_RESULT:

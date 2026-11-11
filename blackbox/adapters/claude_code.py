@@ -20,6 +20,7 @@ import json
 from dataclasses import replace
 from typing import Any
 
+from blackbox.adapters._linking import link_results_to_calls
 from blackbox.adapters.base import Trace
 from blackbox.toolinfo import is_declined
 from blackbox.events import (
@@ -295,7 +296,7 @@ def parse(path: str) -> Trace:
             seq += 1
 
     events = _resolve_parents(events, representative)
-    events = _link_results_to_calls(events)
+    events = link_results_to_calls(events)
 
     return Trace(
         events=events,
@@ -328,27 +329,3 @@ def _resolve_parents(events: list[Event], representative: dict[str, str]) -> lis
                 ev = replace(ev, parent_uid=resolved)
         out.append(ev)
     return out
-
-
-def _link_results_to_calls(events: list[Event]) -> list[Event]:
-    """Re-parent each tool result onto the call it answers.
-
-    In the raw file a result's ``parentUuid`` points at the assistant *message*.
-    Pointing it at the specific ``tool_use`` instead is what makes the graph
-    causal rather than merely chronological: with parallel tool calls in one
-    message, the message-level link cannot say which result belongs to which
-    call, and every per-call duration computed from it would be wrong.
-    """
-    call_uid_by_tool_use: dict[str, str] = {}
-    for ev in events:
-        if ev.kind == TOOL_CALL and ev.tool_use_id:
-            call_uid_by_tool_use.setdefault(ev.tool_use_id, ev.uid)
-
-    linked: list[Event] = []
-    for ev in events:
-        if ev.kind == TOOL_RESULT and ev.tool_use_id:
-            call_uid = call_uid_by_tool_use.get(ev.tool_use_id)
-            if call_uid:
-                ev = replace(ev, parent_uid=call_uid)
-        linked.append(ev)
-    return linked

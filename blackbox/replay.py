@@ -33,8 +33,18 @@ def config_from_meta(meta: dict[str, str]) -> Config:
 
 def replay(db_path: str) -> Analysis:
     """Rebuild the analysis from a stored run. Zero model calls."""
+    from blackbox import pricing
+
     events = store.read_events(db_path)
     meta = store.read_meta(db_path)
+
+    # Rates supplied at analysis time are part of the input, so a replay has
+    # to use the same ones or it would price the same run differently.
+    try:
+        overrides = json.loads(meta.get("price_overrides") or "{}")
+    except json.JSONDecodeError:
+        overrides = {}
+    applied = pricing.set_overrides(overrides)
 
     trace_meta = {}
     for key, value in meta.items():
@@ -51,4 +61,5 @@ def replay(db_path: str) -> Analysis:
         meta=trace_meta,
         config=config_from_meta(meta),
         skipped_lines=int(meta.get("skipped_lines") or 0),
+        price_overrides=applied,
     )

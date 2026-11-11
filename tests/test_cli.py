@@ -131,10 +131,12 @@ def test_ls_lists_recent_sessions(tmp_path, capsys, fixture_path, monkeypatch):
     shutil.copy(fixture_path, root / "-Users-me-app" / "sess.jsonl")
     monkeypatch.setattr(discover, "DEFAULT_ROOT", str(root))
 
-    assert main(["ls"]) == 0
+    assert main(["ls", str(root)]) == 0
     out = capsys.readouterr().out
     assert "sess" in out
-    assert "Users/me/app" in out
+    # The label is the working directory the transcript records inside itself,
+    # which beats decoding it back out of a lossy directory name.
+    assert "/repo" in out
 
 
 def test_ls_on_an_empty_root_is_an_error(tmp_path, capsys):

@@ -43,6 +43,7 @@ class Analysis:
     cost: cost_mod.CostReport
     findings: list[Finding]
     config: Config = field(default_factory=Config)
+    price_overrides: dict[str, Any] = field(default_factory=dict)
 
     # -- summary -----------------------------------------------------------
 
@@ -241,6 +242,7 @@ class Analysis:
             "source": os.path.basename(self.trace.source),
             "adapter": self.trace.adapter,
             "config": self.config.to_dict(),
+            "price_overrides": self.price_overrides,
             "trace_meta": {k: self.trace.meta[k] for k in sorted(self.trace.meta)},
             "summary": self.summary(),
             "cost": self.cost_payload(),
@@ -277,6 +279,7 @@ def analyze_events(
     meta: dict[str, Any] | None = None,
     config: Config | None = None,
     skipped_lines: int = 0,
+    price_overrides: dict[str, Any] | None = None,
 ) -> Analysis:
     """Run the pipeline over already-parsed events (the replay entry point)."""
     config = config or Config()
@@ -290,11 +293,26 @@ def analyze_events(
         meta=meta or {},
         skipped_lines=skipped_lines,
     )
-    return Analysis(trace=trace, graph=g, cost=c, findings=findings, config=config)
+    return Analysis(
+        trace=trace,
+        graph=g,
+        cost=c,
+        findings=findings,
+        config=config,
+        price_overrides=price_overrides or {},
+    )
 
 
-def analyze(path: str, config: Config | None = None, adapter: str | None = None) -> Analysis:
+def analyze(
+    path: str,
+    config: Config | None = None,
+    adapter: str | None = None,
+    price_overrides: dict[str, Any] | None = None,
+) -> Analysis:
     """Parse and analyse a trace file."""
+    from blackbox import pricing
+
+    applied = pricing.set_overrides(price_overrides) if price_overrides else {}
     trace = registry.load(path, adapter=adapter)
     return analyze_events(
         trace.events,
@@ -303,4 +321,5 @@ def analyze(path: str, config: Config | None = None, adapter: str | None = None)
         meta=trace.meta,
         config=config,
         skipped_lines=trace.skipped_lines,
+        price_overrides=applied,
     )

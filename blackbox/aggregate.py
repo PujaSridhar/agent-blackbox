@@ -102,12 +102,18 @@ class Corpus:
         }
 
 
-def load(paths: list[str], config: Config | None = None) -> Corpus:
+def load(
+    paths: list[str],
+    config: Config | None = None,
+    price_overrides: dict[str, Any] | None = None,
+) -> Corpus:
     """Analyse many traces, carrying on past the ones that cannot be read."""
     corpus = Corpus()
     for path in paths:
         try:
-            corpus.runs.append((path, analyze(path, config=config)))
+            corpus.runs.append(
+                (path, analyze(path, config=config, price_overrides=price_overrides))
+            )
         except Exception as exc:  # a corpus scan must not die on one bad file
             corpus.failed.append((path, f"{type(exc).__name__}: {exc}"))
     return corpus

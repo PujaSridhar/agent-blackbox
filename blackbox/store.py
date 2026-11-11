@@ -144,6 +144,7 @@ def write(path: str, analysis: "Analysis") -> None:
             ("skipped_lines", str(analysis.trace.skipped_lines)),
             ("config", json.dumps(analysis.config.to_dict(), sort_keys=True)),
             ("pricing_as_of", analysis.cost.pricing_as_of),
+            ("price_overrides", json.dumps(analysis.price_overrides, sort_keys=True)),
         ]
         meta_rows += [
             (f"trace.{k}", json.dumps(v, sort_keys=True, default=str))
