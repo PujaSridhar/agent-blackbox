@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+*.duckdb
+*.html
+!tests/fixtures/*.jsonl
+.pytest_cache/
+dist/
+build/
+*.egg-info/
