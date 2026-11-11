@@ -214,3 +214,74 @@ def render_corpus(corpus, title: str = "ACROSS ALL RUNS") -> str:
         add("")
 
     return "\n".join(out)
+
+
+# --- diff -----------------------------------------------------------------
+
+
+def _fmt(value: float, unit: str) -> str:
+    if unit == "usd":
+        return f"${_usd(value)}"
+    if unit == "rate":
+        return f"{value * 100:.1f}%"
+    if unit == "duration":
+        return _dur(value)
+    return f"{value:,.0f}" if abs(value - round(value)) < 0.05 else f"{value:,.1f}"
+
+
+def _delta(value: float, unit: str) -> str:
+    sign = "+" if value > 0 else ""
+    if unit == "rate":
+        return f"{sign}{value * 100:.1f}pp"
+    if unit == "usd":
+        return f"{sign}${_usd(abs(value))}" if value >= 0 else f"-${_usd(abs(value))}"
+    if unit == "duration":
+        return f"{sign}{_dur(abs(value))}"
+    return f"{sign}{value:,.0f}" if abs(value - round(value)) < 0.05 else f"{sign}{value:,.1f}"
+
+
+def render_diff(result: dict, before_label: str, after_label: str) -> str:
+    out: list[str] = []
+    add = out.append
+
+    add("")
+    add("AGENT BLACK BOX   diff")
+    add(f"  before  {before_label}  ({result['runs']['before']} run(s))")
+    add(f"  after   {after_label}  ({result['runs']['after']} run(s))")
+    if result["uneven"]:
+        add("  run counts differ, so totals are also shown per run and the verdict follows those")
+    add("")
+
+    header = f"  {'':<20}{'before':>12}{'after':>12}{'change':>12}   "
+    add(header)
+    for row in result["metrics"]:
+        before = _fmt(row["before"], row["unit"])
+        after = _fmt(row["after"], row["unit"])
+        change = _delta(row["delta"], row["unit"])
+        verdict = f"  {row['verdict']}" if row["verdict"] else ""
+        add(f"  {row['label']:<20}{before:>12}{after:>12}{change:>12}{verdict}")
+        if result["uneven"] and "before_per_run" in row:
+            per = (
+                f"{_fmt(row['before_per_run'], row['unit'])} -> "
+                f"{_fmt(row['after_per_run'], row['unit'])} per run"
+            )
+            add(f"  {'':<20}{per:>36}")
+    add("")
+
+    if result["by_detector"]:
+        add("FINDINGS BY TYPE")
+        add(f"  {'':<20}{'before':>12}{'after':>12}{'change':>12}")
+        for row in result["by_detector"]:
+            verdict = f"  {row['verdict']}" if row["verdict"] else ""
+            add(
+                f"  {row['detector']:<20}{row['before']:>12,}{row['after']:>12,}"
+                f"{_delta(row['delta'], 'count'):>12}{verdict}"
+            )
+        add("")
+
+    if result["unpriced"]["before"] or result["unpriced"]["after"]:
+        add("  note: one or both sides ran on models with no price available,")
+        add("        so cost comparisons are incomplete. Supply rates with --prices.")
+        add("")
+
+    return "\n".join(out)

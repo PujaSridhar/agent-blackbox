@@ -1,0 +1,217 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Black Box — synthetic.jsonl</title><style>
+:root {
+  color-scheme: light dark;
+  --bg: #fbfbfa;
+  --panel: #ffffff;
+  --border: #e4e2dd;
+  --ink: #1b1a18;
+  --muted: #6c6862;
+  --accent: #2f6f4f;
+  --high: #b4452f;
+  --med: #b07d26;
+  --low: #5a7a8c;
+  --bar: #cfd8d2;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17181a;
+    --panel: #1e2023;
+    --border: #32353a;
+    --ink: #e8e6e3;
+    --muted: #9b968e;
+    --accent: #7fc4a0;
+    --high: #e8836a;
+    --med: #e0b457;
+    --low: #92b4c8;
+    --bar: #3a4047;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #17181a;
+  --panel: #1e2023;
+  --border: #32353a;
+  --ink: #e8e6e3;
+  --muted: #9b968e;
+  --accent: #7fc4a0;
+  --high: #e8836a;
+  --med: #e0b457;
+  --low: #92b4c8;
+  --bar: #3a4047;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0 16px 72px;
+  background: var(--bg); color: var(--ink);
+  font: 15px/1.6 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.wrap { max-width: 980px; margin: 0 auto; }
+header { padding: 40px 0 24px; border-bottom: 1px solid var(--border); }
+h1 { margin: 0 0 6px; font-size: 25px; letter-spacing: -0.015em; font-weight: 650; }
+.sub { color: var(--muted); font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+h2 {
+  margin: 40px 0 14px; font-size: 12px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted);
+}
+.tiles { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.tile {
+  flex: 1 1 128px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 9px; padding: 13px 15px;
+}
+.tile .v { font-size: 22px; font-weight: 640; font-family: var(--mono); letter-spacing: -0.02em; }
+.tile .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.07em; margin-top: 3px; }
+.panel {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 9px; padding: 4px 16px; margin-bottom: 12px;
+}
+table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12.5px; }
+th {
+  text-align: right; padding: 11px 7px; color: var(--muted); font-weight: 500;
+  border-bottom: 1px solid var(--border); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;
+}
+th:first-child, td:first-child { text-align: left; }
+td { padding: 9px 7px; text-align: right; border-bottom: 1px solid var(--border); }
+tr:last-child td { border-bottom: none; }
+.tag {
+  display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px;
+  border: 1px solid var(--border); color: var(--muted); margin-left: 6px;
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.split { display: flex; height: 9px; border-radius: 5px; overflow: hidden; margin: 6px 0 2px; background: var(--bar); }
+.split span { display: block; height: 100%; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 11.5px; color: var(--muted); font-family: var(--mono); margin-bottom: 14px; }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.bars { font-family: var(--mono); font-size: 12.5px; }
+.bars .row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.bars .lbl { flex: 0 0 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bars .track { flex: 1; background: var(--bar); border-radius: 4px; height: 11px; }
+.bars .fill { background: var(--accent); height: 100%; border-radius: 4px; }
+.bars .num { flex: 0 0 52px; text-align: right; color: var(--muted); }
+.finding { border-left: 3px solid var(--border); padding: 12px 0 12px 14px; margin: 0 0 4px; border-bottom: 1px solid var(--border); }
+.finding:last-child { border-bottom: none; }
+.finding.high { border-left-color: var(--high); }
+.finding.medium { border-left-color: var(--med); }
+.finding.low { border-left-color: var(--low); }
+.finding .ttl { font-weight: 600; font-size: 14px; }
+.finding .meta { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 3px; }
+.finding .det { color: var(--muted); font-size: 13.5px; margin-top: 7px; }
+.sev { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+.sev.high { color: var(--high); } .sev.medium { color: var(--med); } .sev.low { color: var(--low); }
+details.ev { margin-top: 8px; }
+details.ev summary { cursor: pointer; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+details.ev pre {
+  margin: 8px 0 0; padding: 10px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; font-size: 11px; overflow-x: auto; color: var(--muted);
+}
+.note { color: var(--muted); font-size: 12.5px; margin: 10px 0 0; }
+.ok { color: var(--accent); }
+footer {
+  margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--border);
+  color: var(--muted); font-family: var(--mono); font-size: 11.5px; line-height: 1.8;
+}
+@media (max-width: 620px) {
+  .bars .lbl { flex-basis: 108px; }
+  th, td { padding: 8px 4px; font-size: 11.5px; }
+  .tile { flex-basis: 100%; }
+}
+</style></head><body><div class="wrap"><header><h1>Agent Black Box</h1><div class="sub">synthetic.jsonl · adapter claude_code · main</div><div class="tiles"><div class="tile"><div class="v">$10.04+</div><div class="k">cost</div></div><div class="tile"><div class="v">197</div><div class="k">tool calls</div></div><div class="tile"><div class="v">7</div><div class="k">failed</div></div><div class="tile"><div class="v">13min</div><div class="k">active time</div></div><div class="tile"><div class="v">12</div><div class="k">findings</div></div></div></header><h2>Cost</h2><div class="panel"><div class="split"><span style="width:15.382%;background:var(--high)" title="output"></span><span style="width:76.904%;background:var(--med)" title="cache writes"></span><span style="width:0.023%;background:var(--accent)" title="fresh input"></span><span style="width:7.691%;background:var(--low)" title="cache reads"></span></div><div class="legend"><span><i style="background:var(--high)"></i>output $1.54 (15%)</span><span><i style="background:var(--med)"></i>cache writes $7.72 (77%)</span><span><i style="background:var(--accent)"></i>fresh input $0.00 (0%)</span><span><i style="background:var(--low)"></i>cache reads $0.77 (8%)</span></div><table><thead><tr><th>model</th><th>msgs</th><th>output</th><th>cache read</th><th>5m writes</th><th>1h writes</th><th>usd</th></tr></thead><tbody><tr><td>claude-haiku-5-5</td><td>3</td><td>360</td><td>12,000</td><td>3,000</td><td>0</td><td>0.0007</td></tr><tr><td>claude-opus-5-5</td><td>193</td><td>77,200</td><td>3,860,000</td><td>0</td><td>965,000</td><td>10.04</td></tr><tr><td>some-future-model-9<span class="tag">unpriced</span></td><td>1</td><td>50</td><td>100</td><td>0</td><td>0</td><td>0.00</td></tr></tbody></table><p class="note"><strong>76.9%</strong> of spend was 1-hour cache writes. Rebuilding a long 1-hour-cached prefix is the most common way a run costs more than its token count suggests.</p><p class="note">153 tokens ran on models missing from the price table (some-future-model-9), so the total is a floor, not a figure.</p><p class="note"><strong>At least $0.83 (8.3%)</strong> of this run went to work that did not advance the task — error cluster $0.36, thrash $0.26, retry loop $0.21. This is a floor: it counts the turns that issued these calls, not the cost of carrying their results in context afterwards.</p></div><h2>Branches</h2><div class="panel"><table><thead><tr><th>branch</th><th>events</th><th>tool calls</th><th>usd</th></tr></thead><tbody><tr><td>main</td><td>585</td><td>194</td><td>10.04</td></tr><tr><td>subagent-1</td><td>9</td><td>3</td><td>0.0007</td></tr></tbody></table><p class="note">Subagent work is attributed to its own branch, so the main thread's cost is the main thread's alone.</p></div><h2>Tools</h2><div class="panel"><div class="bars"><div class="row"><div class="lbl">Bash</div><div class="track"><div class="fill" style="width:100.00%"></div></div><div class="num">174</div></div><div class="row"><div class="lbl">Write</div><div class="track"><div class="fill" style="width:5.75%"></div></div><div class="num">10</div></div><div class="row"><div class="lbl">Read</div><div class="track"><div class="fill" style="width:4.02%"></div></div><div class="num">7</div></div><div class="row"><div class="lbl">Edit</div><div class="track"><div class="fill" style="width:2.87%"></div></div><div class="num">5</div></div><div class="row"><div class="lbl">AskUserQuestion</div><div class="track"><div class="fill" style="width:0.57%"></div></div><div class="num">1</div></div></div></div><h2>Findings — 12 (1 high, 7 medium, 4 low)</h2><div class="panel"><div class="finding high"><div class="ttl">src/auth.py changed between two reads with no write</div><div class="meta"><span class="sev high">high</span> · contradiction · $0.10</div><div class="det">/repo/src/auth.py was read at step 32 and again at step 35 — the same region, different contents, and the run never wrote to it in between. Something outside the agent changed the file, so anything concluded from the first read was already stale.</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step    32  line     22  Read: /repo/src/auth.py
+step    35  line     24  Read: /repo/src/auth.py
+
+{
+  &quot;first_seq&quot;: 32,
+  &quot;kind&quot;: &quot;stale_read&quot;,
+  &quot;path&quot;: &quot;/repo/src/auth.py&quot;,
+  &quot;region_limit&quot;: null,
+  &quot;region_offset&quot;: null,
+  &quot;second_seq&quot;: 35
+}</pre></details></div><div class="finding medium"><div class="ttl">src/mod0.py edited with no prior read</div><div class="meta"><span class="sev medium">medium</span> · contradiction · $0.05</div><div class="det">/repo/src/mod0.py was edited in place at step 23 without being read or written anywhere in this branch, so the agent changed content it has never seen. A read in an earlier session would not appear in this trace.</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step    23  line     16  Edit: /repo/src/mod0.py
+
+{
+  &quot;kind&quot;: &quot;blind_write&quot;,
+  &quot;path&quot;: &quot;/repo/src/mod0.py&quot;,
+  &quot;seq&quot;: 23
+}</pre></details></div><div class="finding medium"><div class="ttl">src/mod1.py edited with no prior read</div><div class="meta"><span class="sev medium">medium</span> · contradiction · $0.05</div><div class="det">/repo/src/mod1.py was edited in place at step 26 without being read or written anywhere in this branch, so the agent changed content it has never seen. A read in an earlier session would not appear in this trace.</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step    26  line     18  Edit: /repo/src/mod1.py
+
+{
+  &quot;kind&quot;: &quot;blind_write&quot;,
+  &quot;path&quot;: &quot;/repo/src/mod1.py&quot;,
+  &quot;seq&quot;: 26
+}</pre></details></div><div class="finding medium"><div class="ttl">src/mod2.py edited with no prior read</div><div class="meta"><span class="sev medium">medium</span> · contradiction · $0.05</div><div class="det">/repo/src/mod2.py was edited in place at step 29 without being read or written anywhere in this branch, so the agent changed content it has never seen. A read in an earlier session would not appear in this trace.</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step    29  line     20  Edit: /repo/src/mod2.py
+
+{
+  &quot;kind&quot;: &quot;blind_write&quot;,
+  &quot;path&quot;: &quot;/repo/src/mod2.py&quot;,
+  &quot;seq&quot;: 29
+}</pre></details></div><div class="finding medium"><div class="ttl">src/untouched.py edited with no prior read</div><div class="meta"><span class="sev medium">medium</span> · contradiction · $0.05</div><div class="det">/repo/src/untouched.py was edited in place at step 38 without being read or written anywhere in this branch, so the agent changed content it has never seen. A read in an earlier session would not appear in this trace.</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step    38  line     26  Edit: /repo/src/untouched.py
+
+{
+  &quot;kind&quot;: &quot;blind_write&quot;,
+  &quot;path&quot;: &quot;/repo/src/untouched.py&quot;,
+  &quot;seq&quot;: 38
+}</pre></details></div><div class="finding medium"><div class="ttl">Bash called 4x with identical input</div><div class="meta"><span class="sev medium">medium</span> · retry_loop · $0.21</div><div class="det">The same Bash call ran 4 times within 4 tool calls. Identical input means the agent learned nothing between attempts.</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step     2  line      2  Bash: bun test
+step     5  line      4  Bash: bun test
+step     8  line      6  Bash: bun test
+step    11  line      8  Bash: bun test
+
+{
+  &quot;first_seq&quot;: 2,
+  &quot;kind&quot;: &quot;retry_loop&quot;,
+  &quot;last_seq&quot;: 11,
+  &quot;repeats&quot;: 4,
+  &quot;tool&quot;: &quot;Bash&quot;,
+  &quot;window_span&quot;: 4
+}</pre></details></div><div class="finding medium"><div class="ttl">Bash took 4.0min to return</div><div class="meta"><span class="sev medium">medium</span> · stall · $0.05</div><div class="det">4.0min of wall-clock passed between this Bash call and its result. The gap includes any wait for human approval, so treat it as an upper bound on execution time.</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step    14  line     10  Bash: pip install -r requirements.txt
+step    15  line     11  result: ok
+
+{
+  &quot;kind&quot;: &quot;stall&quot;,
+  &quot;seconds&quot;: 240.0,
+  &quot;seq&quot;: 14,
+  &quot;tool&quot;: &quot;Bash&quot;
+}</pre></details></div><div class="finding medium"><div class="ttl">src/thrashed.py written 5x in 5 tool calls</div><div class="meta"><span class="sev medium">medium</span> · thrash · $0.26</div><div class="det">/repo/src/thrashed.py was written 5 times inside a span of 5 tool calls. Edits that tightly packed usually mean each change was fixing the last one.</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step    41  line     28  Write: /repo/src/thrashed.py
+step    44  line     30  Write: /repo/src/thrashed.py
+step    47  line     32  Write: /repo/src/thrashed.py
+step    50  line     34  Write: /repo/src/thrashed.py
+step    53  line     36  Write: /repo/src/thrashed.py
+
+{
+  &quot;first_seq&quot;: 41,
+  &quot;last_seq&quot;: 53,
+  &quot;path&quot;: &quot;/repo/src/thrashed.py&quot;,
+  &quot;window_span&quot;: 5,
+  &quot;writes&quot;: 5
+}</pre></details></div><div class="finding low"><div class="ttl">Bash(npm build) failed 2x: ModuleNotFoundError: cannot resolve &#x27;_&#x27;</div><div class="meta"><span class="sev low">low</span> · error_cluster · $0.10</div><div class="det">2 Bash(npm build) calls failed with the same error shape: ModuleNotFoundError: cannot resolve &#x27;_&#x27;</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step    84  line     57  error: Exit code 1
+step    87  line     59  error: Exit code 1
+
+{
+  &quot;failures&quot;: 2,
+  &quot;first_seq&quot;: 84,
+  &quot;signature&quot;: &quot;ModuleNotFoundError: cannot resolve &#x27;_&#x27;&quot;,
+  &quot;tool&quot;: &quot;Bash(npm build)&quot;
+}</pre></details></div><div class="finding low"><div class="ttl">Bash(python pytest) failed 2x: AssertionError: expected &lt;n&gt;</div><div class="meta"><span class="sev low">low</span> · error_cluster · $0.10</div><div class="det">2 Bash(python pytest) calls failed with the same error shape: AssertionError: expected &lt;n&gt;</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step    78  line     53  error: Exit code 1
+step    81  line     55  error: Exit code 1
+
+{
+  &quot;failures&quot;: 2,
+  &quot;first_seq&quot;: 78,
+  &quot;signature&quot;: &quot;AssertionError: expected &lt;n&gt;&quot;,
+  &quot;tool&quot;: &quot;Bash(python pytest)&quot;
+}</pre></details></div><div class="finding low"><div class="ttl">Edit failed 3x: &lt;tool_use_error&gt;File has not been read yet. Read &lt;path&gt; firs</div><div class="meta"><span class="sev low">low</span> · error_cluster · $0.16</div><div class="det">3 Edit calls failed with the same error shape: &lt;tool_use_error&gt;File has not been read yet. Read &lt;path&gt; first.&lt;/tool_use_error&gt;</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step    24  line     17  error: &lt;tool_use_error&gt;File has not been read yet. Read /repo/src/mod0.py first.&lt;/tool_use_error&gt;
+step    27  line     19  error: &lt;tool_use_error&gt;File has not been read yet. Read /repo/src/mod1.py first.&lt;/tool_use_error&gt;
+step    30  line     21  error: &lt;tool_use_error&gt;File has not been read yet. Read /repo/src/mod2.py first.&lt;/tool_use_error&gt;
+
+{
+  &quot;failures&quot;: 3,
+  &quot;first_seq&quot;: 24,
+  &quot;signature&quot;: &quot;&lt;tool_use_error&gt;File has not been read yet. Read &lt;path&gt; first.&lt;/tool_use_error&gt;&quot;,
+  &quot;tool&quot;: &quot;Edit&quot;
+}</pre></details></div><div class="finding low"><div class="ttl">idle gap of 2.0h at Bash</div><div class="meta"><span class="sev low">low</span> · stall · $0.05</div><div class="det">2.0h passed between this Bash call and its result -- far longer than any tool runs. The session was almost certainly paused here, waiting on a human or simply left running. Counted as idle time, not as a stall.</div><details class="ev"><summary>evidence &amp; metrics</summary><pre>step    17  line     12  Bash: echo waiting
+step    18  line     13  result: waiting
+
+{
+  &quot;kind&quot;: &quot;idle_gap&quot;,
+  &quot;seconds&quot;: 7200.0,
+  &quot;seq&quot;: 17,
+  &quot;tool&quot;: &quot;Bash&quot;
+}</pre></details></div></div><footer>payload digest 55e61f06b1ffcef444ca0e0507523b3bb3201fc3ec5b4a653c90be91cef8b1ac<br>thresholds: stall &ge; 60s · idle &ge; 900s · retry &ge; 3 in 12 calls · thrash &ge; 4 writes<br>prices as of 2026-11-10 · last event 2026-03-01T12:12:41+00:00<br>every number above was derived without a model call, and replays byte-identical from the stored events</footer></div></body></html>

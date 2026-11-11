@@ -5,6 +5,7 @@
     blackbox ~/.claude/projects/my-app/     # every run for one project
     blackbox ls                             # recent sessions, newest first
     blackbox scan                           # every local run, aggregated
+    blackbox diff before.jsonl after.jsonl  # did that change help?
     blackbox run.jsonl --html report.html   # self-contained page
     blackbox run.jsonl --db run.duckdb      # queryable event store
     blackbox run.jsonl --verify             # prove the findings replay exactly
@@ -27,7 +28,7 @@ from blackbox.pricing import PRICING_AS_OF
 from blackbox.report import html as html_report
 from blackbox.report import text as text_report
 
-VERSION = "0.1.0"
+from blackbox import __version__ as VERSION
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,7 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "root",
         nargs="?",
-        help="for 'scan' and 'ls': where to look (default ~/.claude/projects)",
+        help="for 'scan' and 'ls': where to look. For 'diff': the BEFORE side",
+    )
+    parser.add_argument(
+        "against",
+        nargs="?",
+        help="for 'diff': the AFTER side (a trace, a directory or a glob)",
     )
     parser.add_argument("--limit", type=int, default=20, help="rows for 'ls' (default 20)")
     parser.add_argument("--replay", metavar="DB", help="re-derive the report from a stored run")
@@ -142,6 +148,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.trace == "scan":
         return _scan(args.root, config, args, overrides)
 
+    if args.trace == "diff":
+        if not args.root or not args.against:
+            print("usage: blackbox diff BEFORE AFTER", file=sys.stderr)
+            return 2
+        return _diff(args.root, args.against, config, args, overrides)
+
     target = args.trace
     if not target and not args.replay:
         session = discover.latest_for_cwd()
@@ -161,12 +173,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.replay:
-            from blackbox import replay as replay_mod
+            from blackbox.replay import replay as replay_run
 
             if not os.path.exists(args.replay):
                 print(f"error: no such store: {args.replay}", file=sys.stderr)
                 return 1
-            analysis = replay_mod.replay(args.replay)
+            analysis = replay_run(args.replay)
         else:
             if not os.path.exists(target):
                 print(f"error: no such file: {target}", file=sys.stderr)
@@ -266,15 +278,48 @@ def _scan(root: str | None, config: Config, args, overrides: dict) -> int:
     return _aggregate(paths, config, args, title=title, overrides=overrides)
 
 
+def _diff(before: str, after: str, config: Config, args, overrides: dict) -> int:
+    """Compare two sets of runs: did a change to the agent help?"""
+    from blackbox import aggregate, diff
+    from blackbox.report import text as text_report_mod
+
+    sides = {}
+    for label, target in (("before", before), ("after", after)):
+        paths = discover.traces_in(target)
+        if not paths:
+            print(f"error: no traces found for {label}: {target}", file=sys.stderr)
+            return 1
+        corpus = aggregate.load(paths, config=config, price_overrides=overrides)
+        if not corpus.runs:
+            print(f"error: no traces could be read for {label}: {target}", file=sys.stderr)
+            return 1
+        for path, reason in corpus.failed:
+            print(f"  skipped {os.path.basename(path)}: {reason}", file=sys.stderr)
+        sides[label] = corpus
+
+    result = diff.compare(sides["before"], sides["after"])
+
+    if not args.quiet:
+        print(text_report_mod.render_diff(result, os.path.basename(before.rstrip("/")),
+                                          os.path.basename(after.rstrip("/"))))
+
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump(result, fh, indent=2, sort_keys=True, default=str)
+            fh.write("\n")
+        print(f"wrote json diff {args.json}")
+    return 0
+
+
 def _verify(analysis) -> int:
     """Store, replay and compare -- the determinism claim, checked on real input."""
-    from blackbox import replay as replay_mod
     from blackbox import store
+    from blackbox.replay import replay as replay_run
 
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "verify.duckdb")
         store.write(db, analysis)
-        again = replay_mod.replay(db)
+        again = replay_run(db)
 
         original = analysis.digest()
         replayed = again.digest()

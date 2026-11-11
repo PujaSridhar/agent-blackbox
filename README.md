@@ -1,5 +1,9 @@
 # Agent Black Box
 
+[![tests](https://github.com/PujaSridhar/agent-blackbox/actions/workflows/ci.yml/badge.svg)](https://github.com/PujaSridhar/agent-blackbox/actions/workflows/ci.yml)
+[![python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)](https://github.com/PujaSridhar/agent-blackbox)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 **Drop in one agent trace file. Get structured analytics out. No SDK, no vendor, no model calls.**
 
 Everyone is shipping agents. Almost nobody can say what their agent actually
@@ -174,8 +178,21 @@ from events group by 1;
 
 ## Install and use
 
+Nothing to clone, nothing to configure:
+
 ```bash
-pip install -e ".[dev]"
+uvx --from git+https://github.com/PujaSridhar/agent-blackbox blackbox scan
+```
+
+```bash
+pipx run --spec git+https://github.com/PujaSridhar/agent-blackbox blackbox scan
+```
+
+It reads the transcripts already on your machine, offline, and prints what
+your agents have been doing. Or install it properly:
+
+```bash
+pip install git+https://github.com/PujaSridhar/agent-blackbox
 ```
 
 Nobody remembers a session UUID, so you never have to type one:
@@ -210,6 +227,36 @@ MOST REWRITTEN FILES
    16x  /Users/me/dataplane/loaders/get_datasets.py
 ```
 
+### Did that change help?
+
+Tuning a system prompt, swapping a model, adding an MCP server — the honest
+answer has been a feeling. `diff` makes it a measurement, and because
+everything upstream is deterministic, a difference is a difference in the
+agent rather than in the measurement:
+
+```bash
+blackbox diff before.jsonl after/
+```
+
+```
+AGENT BLACK BOX   diff
+                            before       after      change
+  cost                       $4.81      $12.40      +$7.58  worse
+  wasted                     $1.93       $4.34      +$2.41  worse
+  wasted share               40.1%       35.0%      -5.1pp  better
+  cache hit rate             95.8%       91.4%      -4.5pp  worse
+  tool failure rate           2.0%        2.5%      +0.5pp  worse
+
+FINDINGS BY TYPE
+  retry_loop                     4          12          +8  worse
+  thrash                        13           9          -4  better
+```
+
+Either side can be one trace or a directory of them. When the run counts
+differ — one run before a change, three after — totals are also reported per
+run and the verdict follows those, because three runs costing more than one
+is not a regression.
+
 Outputs:
 
 ```bash
@@ -225,6 +272,30 @@ Thresholds are flags, not magic numbers: `--stall-seconds`, `--idle-seconds`,
 `--thrash-window`, `--error-cluster-min`, `--bloat-min-tokens`,
 `--bloat-min-usd`. Whatever you pass is recorded in the store and reused on
 replay.
+
+The HTML report is one file with no scripts and no network requests — it
+renders from a USB stick in five years. A rendered example, built from the
+synthetic fixture so every path in it is `/repo/...`, is checked in at
+[`docs/example-report.html`](docs/example-report.html) (and
+[the Codex one](docs/example-report-codex.html)). Reports from real sessions
+stay out of git, because they embed the file paths of whatever produced them.
+
+### As a library
+
+The CLI is the usual way in, but the interesting questions are the ones
+nobody anticipated:
+
+```python
+from blackbox import analyze
+
+run = analyze("session.jsonl")
+run.cost.total_usd                        # 319.28
+run.wasted()["share_of_run"]              # 0.078
+[f.title for f in run.findings if f.severity == "high"]
+run.payload()                             # the whole canonical result
+```
+
+Ships with `py.typed`, so your type checker sees the annotations.
 
 ---
 

@@ -4,21 +4,54 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-blackbox"
-version = "0.1.0"
-description = "Structured analytics for a single agent run, from the trace file it already writes."
+version = "0.2.0"
+description = "Structured analytics for a single agent run, from the trace file it already writes. No SDK, no vendor, no model calls."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+authors = [{ name = "Puja Sridhar" }]
+keywords = [
+    "agents",
+    "llm",
+    "observability",
+    "tracing",
+    "cost-analysis",
+    "claude-code",
+    "codex",
+    "duckdb",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
 dependencies = ["duckdb>=1.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/PujaSridhar/agent-blackbox"
+Repository = "https://github.com/PujaSridhar/agent-blackbox"
+Issues = "https://github.com/PujaSridhar/agent-blackbox/issues"
 
 [project.scripts]
 blackbox = "blackbox.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["blackbox*"]
+
+[tool.setuptools.package-data]
+blackbox = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

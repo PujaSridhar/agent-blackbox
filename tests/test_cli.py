@@ -211,3 +211,37 @@ def test_discovery_handles_symlinked_paths(tmp_path, monkeypatch, capsys, fixtur
     monkeypatch.setattr(discover, "DEFAULT_ROOT", str(root))
     # ...but stand in the symlinked one.
     assert discover.latest_for_cwd(str(link), str(root)) is not None
+
+
+# --- the installed package, not just the checkout --------------------------
+
+def test_public_api_is_importable():
+    import blackbox
+
+    assert blackbox.__version__
+    for name in ("analyze", "replay", "Analysis", "Config", "Finding", "Event"):
+        assert hasattr(blackbox, name), name
+
+
+def test_replay_function_does_not_break_the_replay_module(fixture_path, tmp_path):
+    """`blackbox.replay` is the public function and shadows the module of the
+    same name. Internal code must still be able to reach the module, or
+    --verify breaks for anyone who installs the package."""
+    import blackbox
+    from blackbox import store
+    from blackbox.replay import replay as replay_run
+
+    assert callable(blackbox.replay)
+
+    original = blackbox.analyze(fixture_path)
+    db = str(tmp_path / "shadow.duckdb")
+    store.write(db, original)
+
+    assert replay_run(db).digest() == original.digest()
+    assert blackbox.replay(db).digest() == original.digest()
+
+
+def test_verify_works_end_to_end(fixture_path, capsys):
+    """The exact path that broke when the public API shadowed the module."""
+    assert main([fixture_path, "--quiet", "--verify"]) == 0
+    assert "verify OK" in capsys.readouterr().out

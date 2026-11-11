@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 
-from blackbox import replay as replay_mod
+from blackbox.replay import replay as replay_run
 from blackbox import store
 from blackbox.analysis import analyze
 
@@ -25,7 +25,7 @@ def test_replay_from_the_store_is_byte_identical(fixture_path, tmp_path):
     db = str(tmp_path / "run.duckdb")
     store.write(db, original)
 
-    replayed = replay_mod.replay(db)
+    replayed = replay_run(db)
 
     assert replayed.digest() == original.digest()
     assert replayed.findings_digest() == original.findings_digest()
@@ -42,7 +42,7 @@ def test_replay_reads_thresholds_back_from_the_store(fixture_path, tmp_path):
     db = str(tmp_path / "tuned.duckdb")
     store.write(db, original)
 
-    replayed = replay_mod.replay(db)
+    replayed = replay_run(db)
 
     assert replayed.config.stall_seconds == 5.0
     assert replayed.config.thrash_min_edits == 2

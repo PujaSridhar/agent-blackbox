@@ -2,7 +2,11 @@
 __pycache__/
 *.pyc
 *.duckdb
+# Generated reports stay out: they embed the real file paths of whatever
+# session produced them. The one under docs/ is built from the synthetic
+# fixture, so every path in it is /repo/... and safe to publish.
 *.html
+!docs/*.html
 !tests/fixtures/*.jsonl
 .pytest_cache/
 dist/
