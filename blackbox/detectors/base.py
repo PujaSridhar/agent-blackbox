@@ -63,8 +63,11 @@ class Config:
     idle_seconds: float = 900.0
     retry_min_repeats: int = 3
     retry_window: int = 12
-    thrash_min_edits: int = 3
+    thrash_min_edits: int = 4
+    thrash_window: int = 25
     error_cluster_min: int = 2
+    bloat_min_tokens: int = 4_000
+    bloat_min_usd: float = 0.50
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,5 +76,8 @@ class Config:
             "retry_min_repeats": self.retry_min_repeats,
             "retry_window": self.retry_window,
             "thrash_min_edits": self.thrash_min_edits,
+            "thrash_window": self.thrash_window,
             "error_cluster_min": self.error_cluster_min,
+            "bloat_min_tokens": self.bloat_min_tokens,
+            "bloat_min_usd": self.bloat_min_usd,
         }

@@ -83,9 +83,11 @@ def test_interrupted_call_is_never_reported(analysis):
 # --- error clusters -------------------------------------------------------
 
 def test_errors_cluster_by_normalised_shape(analysis):
-    clusters = _of(analysis, "error_cluster")
-    assert len(clusters) == 1, "three failures differing only by path are one problem"
-    assert clusters[0].count == 3
+    edit_clusters = [
+        f for f in _of(analysis, "error_cluster") if f.metrics["tool"] == "Edit"
+    ]
+    assert len(edit_clusters) == 1, "three failures differing only by path are one problem"
+    assert edit_clusters[0].count == 3
 
 
 def test_signature_strips_volatile_detail():
@@ -143,11 +145,6 @@ def test_thrash_threshold_is_configurable(analysis, fixture_path):
 
 # --- ordering -------------------------------------------------------------
 
-def test_all_five_detectors_are_registered():
-    names = {m.NAME for m in detectors.DETECTORS}
-    assert names == {"retry_loop", "stall", "error_cluster", "contradiction", "thrash"}
-
-
 def test_findings_are_ordered_severity_first(analysis):
     ranks = [f.rank for f in analysis.findings]
     assert ranks == sorted(ranks)
@@ -184,9 +181,9 @@ def test_repeated_observation_is_polling_not_a_retry_loop():
     ]
     found = retry_loops.run(build(events), Config())
     assert len(found) == 1
-    assert found[0].metrics["kind"] == "polling"
+    assert found[0].metrics["kind"] == "expected_repeat"
     assert found[0].severity == "low"
-    assert "polling, not a retry loop" in found[0].detail
+    assert "expected by design" in found[0].detail
 
 
 def test_repeated_action_is_still_a_retry_loop():
@@ -211,9 +208,156 @@ def test_repeated_action_is_still_a_retry_loop():
 
 
 def test_plain_file_reads_are_polling_not_retries():
-    from blackbox.toolinfo import is_observation
+    from blackbox.toolinfo import repeats_by_design
 
-    assert is_observation("Read", {"file_path": "/a.py"})
-    assert is_observation("mcp__terminal__read_terminal", {})
-    assert not is_observation("Edit", {"file_path": "/a.py"})
-    assert not is_observation("Bash", {"command": "rm -rf build"})
+    assert repeats_by_design("Read", {"file_path": "/a.py"})
+    assert repeats_by_design("mcp__terminal__read_terminal", {})
+    assert not repeats_by_design("Edit", {"file_path": "/a.py"})
+    assert not repeats_by_design("Bash", {"command": "rm -rf build"})
+
+
+def test_progress_bookkeeping_is_not_a_retry_loop():
+    """Advancing a task list with the same payload is the pointer moving, not
+    the agent repeating itself."""
+    from blackbox.toolinfo import repeats_by_design
+
+    assert repeats_by_design("mcp__ccd_turn__update_plan", {"advance": True})
+    assert repeats_by_design("TodoWrite", {})
+
+
+
+# --- regressions: every one of these was a false positive on a real trace ---
+
+def test_write_then_edit_is_not_a_blind_edit(analysis):
+    """An agent that authored a file knows its contents as surely as if it had
+    read them. All 17 blind-edit findings on the first real trace were this."""
+    blind = {
+        f.metrics["path"]
+        for f in _of(analysis, "contradiction")
+        if f.metrics["kind"] == "blind_write"
+    }
+    assert "/repo/src/authored.py" not in blind
+
+
+def test_paging_through_a_file_is_not_a_stale_read(analysis):
+    """Read takes offset/limit. Two regions of an unchanged file return
+    different bytes; keyed by path alone that reads as tampering."""
+    stale_paths = {
+        f.metrics["path"]
+        for f in _of(analysis, "contradiction")
+        if f.metrics["kind"] == "stale_read"
+    }
+    assert "/repo/src/paged.py" not in stale_paths
+
+
+def test_same_region_reread_is_still_a_stale_read(analysis):
+    """The narrowing must not cost the real signal."""
+    stale = [f for f in _of(analysis, "contradiction") if f.metrics["kind"] == "stale_read"]
+    assert len(stale) == 1
+    assert stale[0].metrics["path"].endswith("auth.py")
+    assert stale[0].metrics["region_offset"] is None
+
+
+def test_exit_code_header_is_not_an_error_signature(analysis):
+    """Shell failures arrive as 'Exit code 1' then the real output. Taking line
+    one collapsed seven unrelated failures into a single useless cluster."""
+    from blackbox.detectors.error_clusters import signature
+
+    sig = signature("Exit code 1\n=== test session starts ===\nAssertionError: expected 3")
+    assert "exit code" not in sig.lower()
+    assert "AssertionError" in sig
+
+    assert signature("Exit code 1") == "Exit code <n>"  # nothing else to go on
+
+
+def test_different_programs_do_not_share_a_cluster(analysis):
+    """A pytest failure and an npm failure are different problems even when
+    their normalised text would otherwise match."""
+    labels = {f.metrics["tool"] for f in _of(analysis, "error_cluster")}
+    assert "Bash(python pytest)" in labels
+    assert "Bash(npm build)" in labels
+
+
+def test_waiting_for_a_human_is_not_a_stall(analysis):
+    """AskUserQuestion exists to wait for a person. Timing their typing and
+    calling it an agent stall is noise."""
+    tools = {f.metrics["tool"] for f in _of(analysis, "stall")}
+    assert "AskUserQuestion" not in tools
+
+
+def test_declined_tool_call_is_not_a_failure(analysis):
+    """A human refusing a call is not the tool breaking."""
+    assert analysis.summary()["tool_failures"] == 7  # 3 Edit + 2 pytest + 2 npm, no decline
+    for finding in _of(analysis, "error_cluster"):
+        assert "rm -rf" not in finding.detail
+
+
+def test_declines_are_flagged_on_the_event(analysis):
+    declined = [e for e in analysis.graph.events if "declined" in e.flags]
+    assert len(declined) == 1
+
+
+def test_spread_out_writes_are_not_thrash(analysis):
+    """Four writes to README.md across a long session is iteration, not thrash."""
+    paths = {f.metrics["path"] for f in _of(analysis, "thrash")}
+    assert "/repo/README.md" not in paths
+
+
+def test_dense_writes_are_still_thrash(analysis):
+    thrash = _of(analysis, "thrash")
+    assert len(thrash) == 1
+    assert thrash[0].metrics["path"] == "/repo/src/thrashed.py"
+    assert thrash[0].metrics["window_span"] <= Config().thrash_window
+
+
+def test_program_hint_sees_past_shell_plumbing():
+    from blackbox.toolinfo import program_hint
+
+    assert program_hint("Bash", {"command": "cd /repo && python -m pytest -q"}) == "python pytest"
+    assert program_hint("Bash", {"command": "cd a && cd b && ./deploy.sh"}) == "deploy.sh"
+    assert program_hint("Edit", {"file_path": "/a.py"}) == ""
+
+
+# --- context bloat --------------------------------------------------------
+
+def test_context_bloat_is_detected_with_a_tuned_threshold(fixture_path):
+    """The fixture's run is deliberately cheap, so the default dollar floor
+    does not apply. The mechanism is what is under test here."""
+    from blackbox.analysis import analyze
+
+    tuned = analyze(fixture_path, config=Config(bloat_min_usd=0.01, bloat_min_tokens=2_000))
+    bloat = [f for f in tuned.findings if f.detector == "context_bloat"]
+    assert len(bloat) == 1
+    finding = bloat[0]
+    assert finding.metrics["est_tokens"] > 2_000
+    assert finding.metrics["downstream_turns"] > 10
+    assert finding.metrics["estimated"] is True
+
+
+def test_context_bloat_respects_the_dollar_floor(analysis):
+    """At default thresholds a cheap run reports nothing, rather than noise."""
+    assert [f for f in analysis.findings if f.detector == "context_bloat"] == []
+
+
+def test_context_bloat_is_silent_without_a_priced_model(fixture_path, monkeypatch):
+    """No rate means no honest dollar figure, so the detector says nothing."""
+    from blackbox.detectors import context_bloat
+
+    monkeypatch.setattr(context_bloat, "lookup", lambda model: None)
+    from blackbox.adapters import registry
+    from blackbox.graph import build
+
+    graph = build(registry.load(fixture_path).events)
+    assert context_bloat.run(graph, Config(bloat_min_usd=0.0, bloat_min_tokens=0)) == []
+
+
+def test_six_detectors_are_registered():
+    names = {m.NAME for m in detectors.DETECTORS}
+    assert names == {
+        "retry_loop",
+        "stall",
+        "error_cluster",
+        "contradiction",
+        "thrash",
+        "context_bloat",
+    }

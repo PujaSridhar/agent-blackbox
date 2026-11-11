@@ -11,12 +11,13 @@ contract, and a dashboard you have to trust. But your agent already writes a
 trace file. That file is enough.
 
 ```bash
-blackbox ~/.claude/projects/my-project/session.jsonl
+blackbox                 # the latest run in this directory
 ```
 
 ```
 AGENT BLACK BOX   1919 events from session.jsonl
-  adapter claude_code · 384 tool calls · 16 failed · 6.7h active over 31.2h
+  adapter claude_code · 384 tool calls · 14 failed · 6.7h active over 31.2h
+  46min waiting on you · 2 calls you declined
 
 COST  $319.28      rates as of 2026-11-10
   model                    msgs     output   cache read   1h writes        usd
@@ -24,24 +25,29 @@ COST  $319.28      rates as of 2026-11-10
   claude-opus-4-8           568    748,144  196,595,856  11,385,828      230.33
   44.4% of spend was 1-hour cache writes  <- rebuilding a long cached prefix
                                              is where this run's money went
+  at least $24.88 (7.8%) went to work that did not advance the task
+    thrash $23.75, retry loop $1.13, error cluster $0.35
 
-FINDINGS  75 total (12 high, 41 medium, 22 low)
-  [HIGH] contradiction  backend/game.py changed between two reads with no write
-  [HIGH] retry_loop     Edit called 6x with identical input
-  [MED ] stall          Bash took 11.7min to return
+FINDINGS  50 total (7 high, 18 medium, 25 low)
+  [HIGH] thrash  backend/physics.py written 9x in 70 tool calls   $5.06
+         backend/physics.py was written 9 times inside a span of 70 tool
+         calls. Edits that tightly packed usually mean each change was
+         fixing the last one.
+         · step 1204 line 1533  Edit: /repo/backend/physics.py
+         · step 1211 line 1540  Edit: /repo/backend/physics.py
   ...
 
-  payload digest 78d9ea65649652  ·  detectors ran with no model calls
+  payload digest 4b2f61f38c729c  ·  detectors ran with no model calls
 ```
 
 Then prove it:
 
 ```bash
-blackbox session.jsonl --verify
+blackbox --verify
 ```
 
 ```
-verify OK   75 findings replayed byte-identical from the event store,
+verify OK   50 findings replayed byte-identical from the event store,
             with no model calls
 ```
 
@@ -81,23 +87,49 @@ A run can look cheap per token and still be expensive. In the session above,
 **44.4% of $319.28 went to 1-hour cache writes** — a long cached prefix being
 rebuilt over and over. That is invisible in any flat token count.
 
+### Findings cost money, and the report says how much
+
+Every finding carries the cost of the model turns behind it, and the run
+carries a total. On that session, **$24.88 — 7.8% of the bill — went to work
+that did not advance the task**, nearly all of it rewriting the same files.
+
+That figure is a floor, deliberately. It counts the turns that issued the
+implicated calls; it does not try to price the downstream cost of carrying
+their results in context, which cannot be attributed exactly. A number you can
+defend beats a larger one you cannot.
+
 ---
 
 ## Findings
 
-Five detectors, all pure functions of the graph. No model decides anything.
+Six detectors, all pure functions of the graph. No model decides anything.
 
 | detector | fires on | deliberately does not fire on |
 |---|---|---|
-| `retry_loop` | the same acting call repeated with identical input inside a sliding window | repeats of *observing* tools — eight identical screenshots is polling, reported at low severity |
-| `stall` | wall-clock gap between a call and its result | interrupted calls; pauses long enough to be a human away, reported separately as idle gaps |
-| `error_cluster` | failed calls grouped by normalised error shape | one-off failures below the cluster threshold |
-| `contradiction` | a file read twice with different contents and no write between; a file edited in place that was never read | `Write` creating a new file |
-| `thrash` | a file written three or more times | — |
+| `retry_loop` | the same acting call repeated with identical input inside a sliding window | observation and progress tools — eight identical screenshots is polling, and advancing a task list ten times is bookkeeping |
+| `stall` | wall-clock gap between a call and its result | interrupted calls; tools that exist to wait for a human; pauses long enough to be a person away, reported separately as idle gaps |
+| `error_cluster` | failed calls grouped by normalised error shape, keyed by the program that ran | bare `Exit code 1` headers; calls a human declined |
+| `contradiction` | the same *region* of a file re-read with different bytes and no write between; a file edited in place that was never read **or written** | paging through a file with `offset`/`limit`; editing a file the agent created itself |
+| `thrash` | several writes to one file inside a sliding window | the same number of writes spread across a long session |
+| `context_bloat` | a large tool result, priced by the turns that carried it afterwards | runs with no model price available — no rate, no claim |
 
-Each exclusion above is a false positive found by running against real traces,
-not a hypothetical. The polling rule alone reclassified 15 of 22 apparent
-"retry loops" across the development corpus.
+**Every exclusion in the right-hand column is a false positive found by running
+against real traces, not a hypothetical.** On the first real corpus the naive
+versions produced 249 findings; the current ones produce 198, and the 51 that
+disappeared were all wrong:
+
+* 17 of 17 "blind edits" were files the agent had created itself with `Write`.
+  Having authored a file is knowing its contents.
+* The one "stale read" — the finding this README used to lead with — was an
+  agent paging through `game.py` at `offset=95` then `offset=164`. Two regions
+  of an unchanged file, reported as tampering.
+* Seven unrelated shell failures collapsed into one `Exit code <n>` cluster,
+  because the first line of a failed `Bash` result is a header, not an error.
+* Four "stalls" were `AskUserQuestion` waiting for a human to type.
+* Two "tool failures" were a human declining a call.
+* Files were reported as thrashed for three edits across six hours.
+
+Each of those has a regression test with the real-world case written into it.
 
 ---
 
@@ -116,6 +148,7 @@ opinion. This one reproduces exactly:
 
 `tests/test_determinism.py` enforces all of it, including a test that
 monkeypatches `socket` to prove the analysis path cannot open a connection.
+Across 24 real transcripts, all 24 replay byte-identical.
 
 Because the store is just DuckDB, it is also the query interface:
 
@@ -131,25 +164,54 @@ from events group by 1;
 
 ---
 
-## Install
+## Install and use
 
 ```bash
 pip install -e ".[dev]"
 ```
 
+Nobody remembers a session UUID, so you never have to type one:
+
 ```bash
-blackbox TRACE.jsonl                    # report to stdout
-blackbox TRACE.jsonl --html out.html    # self-contained page, no JS, no network
-blackbox TRACE.jsonl --json out.json    # canonical payload
-blackbox TRACE.jsonl --db run.duckdb    # queryable event store
-blackbox TRACE.jsonl --verify           # store, replay, compare digests
-blackbox --replay run.duckdb            # re-derive from a stored run
+blackbox                         # latest run for the current directory
+blackbox ls                      # recent sessions, newest first
+blackbox scan                    # every local run, aggregated
+blackbox ~/.claude/projects/app/ # every run for one project
+blackbox run.jsonl               # one specific trace
+```
+
+`scan` is the one to try first — it reads every transcript on the machine,
+offline, and tells you what your agent gets wrong *habitually*:
+
+```
+AGENT BLACK BOX   every run under ~/.claude/projects
+  24 run(s) · 1,935 tool calls · 198 findings · 22.1h active
+
+SPEND  $993.14 across 24 run(s)
+  at least $88.64 (8.9%) on work that did not advance the task
+  cache hit rate 95.4% of billed input · 35,577,142 tokens of 1-hour cache writes
+  tool failure rate 4.3% (83 failed)
+
+MOST REWRITTEN FILES
+   39x  …/scratchpad/Puja Sridhar SDE/main.tex
+   16x  /Users/me/marimo/marimo/_data/get_datasets.py
+```
+
+Outputs:
+
+```bash
+blackbox run.jsonl --html out.html    # self-contained page, no JS, no network
+blackbox run.jsonl --json out.json    # canonical payload
+blackbox run.jsonl --db run.duckdb    # queryable event store
+blackbox run.jsonl --verify           # store, replay, compare digests
+blackbox --replay run.duckdb          # re-derive from a stored run
 ```
 
 Thresholds are flags, not magic numbers: `--stall-seconds`, `--idle-seconds`,
 `--retry-min-repeats`, `--retry-window`, `--thrash-min-edits`,
-`--error-cluster-min`. Whatever you pass is recorded in the store and reused
-on replay.
+`--thrash-window`, `--error-cluster-min`, `--bloat-min-tokens`,
+`--bloat-min-usd`. Whatever you pass is recorded in the store and reused on
+replay.
 
 ---
 
@@ -173,12 +235,17 @@ defeated itself:
 
 * **One adapter so far.** Claude Code only. The canonical model was designed
   against one format, and a second adapter is what will prove it general.
+* **`context_bloat` is an estimate.** Token counts are derived from character
+  length, and context editing or compaction would evict a result early. It is
+  an upper bound on a context that is never cleared, and it is labelled as one
+  everywhere it appears.
 * **Stall timings are upper bounds.** The gap between a call and its result
-  includes any wait for human approval. The report says so where it reports it.
+  includes any wait for approval. The report says so where it reports one.
 * **Prices are a table, not an API.** Rates in `blackbox/pricing.py` were
   verified on 2026-11-10. Tokens on a model missing from the table are counted
-  and reported as unpriced, and the total is marked a floor — a wrong number
-  would be worse than a missing one.
+  and reported as unpriced, and the total is marked a floor.
+* **Waste attribution is a floor.** It counts the turns behind a finding, not
+  the downstream context those turns created.
 * **Blind-edit detection is per-trace.** A file read in an earlier session
   looks unread here.
 * **A resumed session may reference rows in another file.** Those parents are
@@ -195,8 +262,10 @@ python tests/fixtures/make_fixture.py   # regenerate the synthetic trace
 ```
 
 The fixture is hand-written rather than copied from a real session: every
-detector has a case planted for it, plus the false positives that matter.
-A fixture nobody can read is a fixture nobody trusts.
+detector has a case planted for it, *and every false positive has a negative
+case planted next to it* — a file written then edited, a file read in two
+regions, a question a human took four minutes to answer. A fixture nobody can
+read is a fixture nobody trusts.
 
 ## License
 

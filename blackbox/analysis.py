@@ -21,7 +21,10 @@ from blackbox import detectors as detectors_mod
 from blackbox import graph as graph_mod
 from blackbox.adapters import registry
 from blackbox.adapters.base import Trace
+from blackbox.describe import evidence_detail
 from blackbox.detectors.base import Config, Finding
+from blackbox.toolinfo import is_human_in_the_loop
+from blackbox.events import TOOL_CALL, TOOL_RESULT as _TR  # noqa: F401
 from blackbox.events import (
     ASSISTANT_MESSAGE,
     TOOL_CALL,
@@ -47,7 +50,26 @@ class Analysis:
         events = self.graph.events
         kinds = Counter(e.kind for e in events)
         tools = Counter(e.tool_name or "?" for e in events if e.kind == TOOL_CALL)
-        failures = sum(1 for e in events if e.kind == TOOL_RESULT and e.tool_ok is False)
+        # A declined call is a human saying no, not a tool breaking. Counting
+        # it as a failure overstates how badly the run went.
+        failures = sum(
+            1
+            for e in events
+            if e.kind == TOOL_RESULT and e.tool_ok is False and "declined" not in e.flags
+        )
+        declined = sum(1 for e in events if "declined" in e.flags)
+
+        # Time the run spent waiting on a person. Stalls deliberately exclude
+        # it, so it is reported here instead of vanishing.
+        human_wait = 0.0
+        for call in self.graph.tool_calls():
+            if not is_human_in_the_loop(call.tool_name):
+                continue
+            result = self.graph.result_for(call)
+            if result is not None and call.ts and result.ts:
+                gap = (result.ts - call.ts).total_seconds()
+                if gap > 0:
+                    human_wait += gap
 
         stamped = sorted(e.ts for e in events if e.ts is not None)
         first_ts = stamped[0].isoformat() if stamped else None
@@ -69,6 +91,8 @@ class Analysis:
             "tool_calls": kinds.get(TOOL_CALL, 0),
             "tool_results": kinds.get(TOOL_RESULT, 0),
             "tool_failures": failures,
+            "declined_calls": declined,
+            "human_wait_seconds": round(human_wait, 2),
             "orphan_events": self.graph.orphans,
             "skipped_lines": self.trace.skipped_lines,
             "models": sorted({e.model for e in events if e.model}),
@@ -92,6 +116,83 @@ class Analysis:
             "last_ts": last_ts,
             "span_seconds": span,
             "active_seconds": round(active, 2),
+        }
+
+
+    # -- cost attribution --------------------------------------------------
+
+    # Findings whose implicated turns represent work that did not advance the
+    # task. Polling is excluded (it is normal), and context_bloat is excluded
+    # because its figure is a downstream *estimate* -- mixing it with measured
+    # spend would launder an estimate into a hard number.
+    WASTE_DETECTORS = ("retry_loop", "thrash", "error_cluster")
+
+    def _issuing_turn(self, uid: str) -> Event | None:
+        """Walk from a piece of evidence to the model turn that paid for it."""
+        node = self.graph.by_uid.get(uid)
+        if node is None:
+            return None
+        for _ in range(3):  # result -> call -> assistant message
+            if not node.usage.is_empty():
+                return node
+            if not node.parent_uid:
+                return None
+            parent = self.graph.by_uid.get(node.parent_uid)
+            if parent is None:
+                return None
+            node = parent
+        return node if not node.usage.is_empty() else None
+
+    def _turns_behind(self, finding: Finding) -> set[str]:
+        turns = set()
+        for uid in finding.evidence:
+            turn = self._issuing_turn(uid)
+            if turn is not None:
+                turns.add(turn.uid)
+        return turns
+
+    def finding_usd(self, finding: Finding) -> float:
+        """What the model turns behind this finding cost.
+
+        This is the *direct* cost of the turns that issued the implicated
+        calls. It deliberately excludes the downstream cost of carrying their
+        results in context, which cannot be attributed exactly -- so every
+        figure here is a floor, never an estimate dressed up as a total.
+        """
+        return sum(
+            cost_mod.event_usd(self.graph.by_uid[uid]) for uid in sorted(self._turns_behind(finding))
+        )
+
+    def wasted(self) -> dict[str, Any]:
+        """Run-level waste: the union of turns behind the waste findings.
+
+        A union, not a sum: one turn can be implicated by several findings at
+        once (a failing call that was also retried), and adding the findings
+        up would bill that turn twice.
+        """
+        turns: set[str] = set()
+        per_detector: dict[str, set[str]] = {}
+        for finding in self.findings:
+            if finding.detector not in self.WASTE_DETECTORS:
+                continue
+            if finding.detector == "retry_loop" and finding.metrics.get("kind") == "expected_repeat":
+                continue
+            behind = self._turns_behind(finding)
+            turns |= behind
+            per_detector.setdefault(finding.detector, set()).update(behind)
+
+        total = sum(cost_mod.event_usd(self.graph.by_uid[uid]) for uid in sorted(turns))
+        return {
+            "usd": round(total, 6),
+            "share_of_run": round(total / self.cost.total_usd, 6) if self.cost.total_usd else 0.0,
+            "turns": len(turns),
+            "by_detector": {
+                name: round(
+                    sum(cost_mod.event_usd(self.graph.by_uid[uid]) for uid in sorted(uids)), 6
+                )
+                for name, uids in sorted(per_detector.items())
+            },
+            "is_floor": True,
         }
 
     def cost_payload(self) -> dict[str, Any]:
@@ -131,6 +232,7 @@ class Analysis:
                 for mc in c.by_model
             ],
             "by_branch": {k: round(v, 6) for k, v in sorted(c.by_branch.items())},
+            "wasted": self.wasted(),
         }
 
     def payload(self) -> dict[str, Any]:
@@ -142,8 +244,18 @@ class Analysis:
             "trace_meta": {k: self.trace.meta[k] for k in sorted(self.trace.meta)},
             "summary": self.summary(),
             "cost": self.cost_payload(),
-            "findings": [f.to_dict() for f in self.findings],
+            "findings": [self._finding_payload(f) for f in self.findings],
         }
+
+    def _finding_payload(self, finding: Finding) -> dict[str, Any]:
+        payload = finding.to_dict()
+        payload["direct_usd"] = round(self.finding_usd(finding), 6)
+        payload["evidence_detail"] = [
+            evidence_detail(self.graph.by_uid[uid])
+            for uid in finding.evidence
+            if uid in self.graph.by_uid
+        ][:12]
+        return payload
 
     def digest(self) -> str:
         """SHA-256 over the canonical payload."""

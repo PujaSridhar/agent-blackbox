@@ -14,13 +14,22 @@ report untrustworthy:
   agent's behaviour.
 
 Gaps past ``idle_seconds`` are reported as idle gaps at low severity and never
-counted as stalls. Calls the user interrupted are excluded entirely.
+counted as stalls.
+
+Excluded entirely:
+
+* calls the user interrupted;
+* **tools whose whole purpose is to wait for a human** -- asking a question and
+  waiting for an answer is the tool working, and timing the human's reading and
+  typing adds nothing but noise. That time is reported as a run-level total
+  instead, where it belongs.
 """
 
 from __future__ import annotations
 
 from blackbox.detectors.base import HIGH, LOW, MEDIUM, Config, Finding
 from blackbox.graph import Graph
+from blackbox.toolinfo import is_human_in_the_loop
 
 NAME = "stall"
 
@@ -32,8 +41,10 @@ def run(graph: Graph, config: Config) -> list[Finding]:
         result = graph.result_for(call)
         if result is None or call.ts is None or result.ts is None:
             continue
-        if "interrupted" in result.flags:
+        if "interrupted" in result.flags or "declined" in result.flags:
             continue
+        if is_human_in_the_loop(call.tool_name):
+            continue  # that gap is a person reading and typing, not a stall
 
         seconds = (result.ts - call.ts).total_seconds()
         if seconds < config.stall_seconds:

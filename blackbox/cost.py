@@ -95,6 +95,13 @@ def _price_model(model: str, usage: Usage, calls: int) -> ModelCost:
     )
 
 
+def event_usd(event: Event) -> float:
+    """What one model turn cost. Zero for events that carry no usage."""
+    if event.usage.is_empty():
+        return 0.0
+    return _price_model(event.model or "unknown", event.usage, 1).total_usd
+
+
 def compute(events: list[Event]) -> CostReport:
     per_model: dict[str, Usage] = {}
     per_model_calls: dict[str, int] = {}

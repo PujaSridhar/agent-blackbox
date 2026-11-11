@@ -12,6 +12,7 @@ import html
 import json
 
 from blackbox.analysis import Analysis
+from blackbox.describe import describe
 from blackbox.detectors.base import HIGH, LOW, MEDIUM
 
 _CSS = """
@@ -261,6 +262,22 @@ def render(analysis: Analysis) -> str:
             f"price table ({_esc(', '.join(c.unpriced_models))}), so the total is a floor, "
             f"not a figure.</p>"
         )
+
+    waste = analysis.wasted()
+    if waste["usd"] > 0:
+        add(
+            f'<p class="note"><strong>At least ${waste["usd"]:,.2f} '
+            f'({waste["share_of_run"] * 100:.1f}%)</strong> of this run went to work that did '
+            f"not advance the task — "
+            + _esc(
+                ", ".join(
+                    f"{name.replace('_', ' ')} ${value:,.2f}"
+                    for name, value in sorted(waste["by_detector"].items(), key=lambda kv: -kv[1])
+                )
+            )
+            + ". This is a floor: it counts the turns that issued these calls, not the "
+            "cost of carrying their results in context afterwards.</p>"
+        )
     add("</div>")
 
     # --- branches ---------------------------------------------------------
@@ -305,17 +322,29 @@ def render(analysis: Analysis) -> str:
         branch = "" if f.branch == "main" else f'<span class="tag">{_esc(f.branch)}</span>'
         add(f'<div class="finding {_esc(f.severity)}">')
         add(f'<div class="ttl">{_esc(f.title)}{branch}</div>')
+        usd = analysis.finding_usd(f)
+        price = f" · ${_usd(usd)}" if usd > 0 else ""
         add(
             f'<div class="meta"><span class="sev {_esc(f.severity)}">{_esc(f.severity)}</span>'
-            f" · {_esc(f.detector)}</div>"
+            f" · {_esc(f.detector)}{_esc(price)}</div>"
         )
         add(f'<div class="det">{_esc(f.detail)}</div>')
+
+        lines = []
+        for uid in f.evidence[:12]:
+            event = analysis.graph.by_uid.get(uid)
+            if event is None:
+                continue
+            lines.append(f"step {event.seq:>5}  line {event.source_line:>6}  {describe(event)}")
+        more = len(f.evidence) - len(lines)
+        if more > 0:
+            lines.append(f"... and {more} more")
         metrics = json.dumps({k: f.metrics[k] for k in sorted(f.metrics)}, indent=2, default=str)
         add(
             '<details class="ev"><summary>evidence &amp; metrics</summary><pre>'
+            + _esc("\n".join(lines))
+            + "\n\n"
             + _esc(metrics)
-            + "\n\nevents:\n"
-            + _esc("\n".join(f.evidence))
             + "</pre></details>"
         )
         add("</div>")

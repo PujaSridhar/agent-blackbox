@@ -126,6 +126,17 @@ class Builder:
         self.rows.append(row)
         return uid
 
+    def declined(self, parent: str, tool: str, tool_input: dict) -> str:
+        """A tool call the human refused. Not a failure, not a stall."""
+        call_uid, tool_use_id = self.call(parent, tool, tool_input)
+        self.tick(45)
+        return self.result(
+            call_uid,
+            tool_use_id,
+            "The user doesn't want to proceed with this tool use. The tool use was rejected.",
+            is_error=True,
+        )
+
     def step(self, parent: str, tool: str, tool_input: dict, output: str, **kw) -> str:
         """A call plus its result, advancing the clock by ``gap`` seconds."""
         gap = kw.pop("gap", 2.0)
@@ -203,6 +214,76 @@ def build() -> list[dict]:
             model="claude-haiku-5-5",
             usage=_usage(out=120, read=4_000, write_1h=0, write_5m=1_000),
         )
+
+    # ---- negative cases: each of these was a false positive once ----------
+
+    # Write then Edit: the agent authored the file, so the edit is not blind.
+    cursor = b.step(
+        cursor, "Write", {"file_path": "/repo/src/authored.py", "content": "v1"}, "ok"
+    )
+    cursor = b.step(
+        cursor,
+        "Edit",
+        {"file_path": "/repo/src/authored.py", "old_string": "v1", "new_string": "v2"},
+        "ok",
+    )
+
+    # Paging through one file: different regions, different bytes, same file.
+    # Keyed by path alone this reads as the file changing underneath the agent.
+    cursor = b.step(
+        cursor, "Read", {"file_path": "/repo/src/paged.py", "offset": 1, "limit": 50}, "lines 1-50"
+    )
+    cursor = b.step(
+        cursor,
+        "Read",
+        {"file_path": "/repo/src/paged.py", "offset": 51, "limit": 50},
+        "lines 51-100, totally different text",
+    )
+
+    # Shell failures from different programs behind the same exit-code header.
+    for _ in range(2):
+        cursor = b.step(
+            cursor,
+            "Bash",
+            {"command": "cd /repo && python -m pytest -q"},
+            "Exit code 1\n=== test session starts ===\ncollected 4 items\nAssertionError: expected 3",
+            is_error=True,
+        )
+    for _ in range(2):
+        cursor = b.step(
+            cursor,
+            "Bash",
+            {"command": "npm run build"},
+            "Exit code 1\n> build\nModuleNotFoundError: cannot resolve 'react-dom'",
+            is_error=True,
+        )
+
+    # A human taking four minutes to answer a question is not an agent stall.
+    cursor = b.step(cursor, "AskUserQuestion", {"questions": [{"q": "which?"}]}, "option b", gap=240)
+
+    # A refused tool call is a human saying no, not a tool failure.
+    cursor = b.declined(cursor, "Bash", {"command": "rm -rf /repo/build"})
+
+    # Four writes to one file, spread far apart: ordinary iteration, not thrash.
+    for n in range(4):
+        cursor = b.step(
+            cursor, "Write", {"file_path": "/repo/README.md", "content": f"rev {n}"}, "ok"
+        )
+        for filler in range(30):
+            cursor = b.step(
+                cursor, "Bash", {"command": f"echo spacer {n}-{filler}"}, "ok", gap=1
+            )
+
+    # A single huge tool result early in the run: cheap at the time, then
+    # re-sent as cached input on every later turn.
+    cursor = b.step(
+        cursor,
+        "Bash",
+        {"command": "cat build/verbose.log"},
+        "LOG LINE sample output padding\n" * 1200,
+    )
+    for n in range(40):
+        cursor = b.step(cursor, "Bash", {"command": f"echo after {n}"}, "ok", gap=1)
 
     # an unpriced model, so the "cost is a floor" path is exercised
     b.step(

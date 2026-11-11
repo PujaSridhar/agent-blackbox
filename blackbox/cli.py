@@ -1,6 +1,10 @@
 """Command line interface.
 
-    blackbox run.jsonl                      # report to stdout
+    blackbox                                # the latest run in this directory
+    blackbox run.jsonl                      # one specific trace
+    blackbox ~/.claude/projects/my-app/     # every run for one project
+    blackbox ls                             # recent sessions, newest first
+    blackbox scan                           # every local run, aggregated
     blackbox run.jsonl --html report.html   # self-contained page
     blackbox run.jsonl --db run.duckdb      # queryable event store
     blackbox run.jsonl --verify             # prove the findings replay exactly
@@ -15,6 +19,7 @@ import os
 import sys
 import tempfile
 
+from blackbox import discover
 from blackbox.adapters.registry import ADAPTERS, NoAdapterError
 from blackbox.analysis import analyze
 from blackbox.detectors.base import Config
@@ -36,7 +41,21 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"adapters: {', '.join(m.NAME for m in ADAPTERS)} · prices as of {PRICING_AS_OF}",
     )
-    parser.add_argument("trace", nargs="?", help="path to an agent trace file (.jsonl)")
+    parser.add_argument(
+        "trace",
+        nargs="?",
+        help=(
+            "a trace file, a directory of traces, or one of: "
+            "'ls' (recent sessions), 'scan' (every local run). "
+            "Omit it to use the latest run for the current directory."
+        ),
+    )
+    parser.add_argument(
+        "root",
+        nargs="?",
+        help="for 'scan' and 'ls': where to look (default ~/.claude/projects)",
+    )
+    parser.add_argument("--limit", type=int, default=20, help="rows for 'ls' (default 20)")
     parser.add_argument("--replay", metavar="DB", help="re-derive the report from a stored run")
     parser.add_argument("--adapter", help="force an adapter instead of sniffing")
 
@@ -58,7 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
     thresholds.add_argument("--retry-min-repeats", type=int, default=Config.retry_min_repeats)
     thresholds.add_argument("--retry-window", type=int, default=Config.retry_window)
     thresholds.add_argument("--thrash-min-edits", type=int, default=Config.thrash_min_edits)
+    thresholds.add_argument("--thrash-window", type=int, default=Config.thrash_window)
     thresholds.add_argument("--error-cluster-min", type=int, default=Config.error_cluster_min)
+    thresholds.add_argument("--bloat-min-tokens", type=int, default=Config.bloat_min_tokens)
+    thresholds.add_argument("--bloat-min-usd", type=float, default=Config.bloat_min_usd)
 
     parser.add_argument(
         "--verify",
@@ -82,9 +104,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if not args.trace and not args.replay:
-        parser.print_help()
-        return 2
+    if args.trace == "ls":
+        return _list_sessions(args.root or discover.DEFAULT_ROOT, args.limit)
     if args.trace and args.replay:
         print("error: pass a trace file or --replay, not both", file=sys.stderr)
         return 2
@@ -95,8 +116,31 @@ def main(argv: list[str] | None = None) -> int:
         retry_min_repeats=args.retry_min_repeats,
         retry_window=args.retry_window,
         thrash_min_edits=args.thrash_min_edits,
+        thrash_window=args.thrash_window,
         error_cluster_min=args.error_cluster_min,
+        bloat_min_tokens=args.bloat_min_tokens,
+        bloat_min_usd=args.bloat_min_usd,
     )
+
+    if args.trace == "scan":
+        return _scan(args.root or discover.DEFAULT_ROOT, config, args)
+
+    target = args.trace
+    if not target and not args.replay:
+        session = discover.latest_for_cwd()
+        if session is None:
+            print(
+                "No agent transcripts found for this directory.\n"
+                + "".join(f"  Looked in: {d}\n" for d in discover.candidate_dirs())
+                + "  Try 'blackbox ls' to see recent sessions, or pass a trace file.",
+                file=sys.stderr,
+            )
+            return 1
+        target = session.path
+        print(f"using latest session for this directory: {os.path.basename(target)}")
+
+    if target and os.path.isdir(target):
+        return _aggregate(discover.traces_in(target), config, args, title=target)
 
     try:
         if args.replay:
@@ -107,10 +151,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             analysis = replay_mod.replay(args.replay)
         else:
-            if not os.path.exists(args.trace):
-                print(f"error: no such file: {args.trace}", file=sys.stderr)
+            if not os.path.exists(target):
+                print(f"error: no such file: {target}", file=sys.stderr)
                 return 1
-            analysis = analyze(args.trace, config=config, adapter=args.adapter)
+            analysis = analyze(target, config=config, adapter=args.adapter)
     except NoAdapterError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -139,6 +183,53 @@ def main(argv: list[str] | None = None) -> int:
         return _verify(analysis)
 
     return 0
+
+
+def _list_sessions(root: str, limit: int) -> int:
+    import datetime
+
+    sessions = discover.recent_sessions(root, limit)
+    if not sessions:
+        print(f"no transcripts found under {root}", file=sys.stderr)
+        return 1
+    print(f"{'modified':<17}{'size':>9}  {'session':<14} project")
+    for session in sessions:
+        when = datetime.datetime.fromtimestamp(session.modified).strftime("%Y-%m-%d %H:%M")
+        print(
+            f"{when:<17}{session.size / 1024:>8.0f}K  "
+            f"{session.session_id[:12]:<14} {discover.decode_project(session.project)}"
+        )
+    return 0
+
+
+def _aggregate(paths: list[str], config: Config, args, title: str) -> int:
+    from blackbox import aggregate
+    from blackbox.report import text as text_report_mod
+
+    if not paths:
+        print(f"no traces found under {title}", file=sys.stderr)
+        return 1
+
+    corpus = aggregate.load(paths, config=config)
+    if not corpus.runs:
+        print("no traces could be read", file=sys.stderr)
+        return 1
+
+    if not args.quiet:
+        print(text_report_mod.render_corpus(corpus, title=title))
+    for path, reason in corpus.failed:
+        print(f"  skipped {os.path.basename(path)}: {reason}", file=sys.stderr)
+
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump(corpus.summary(), fh, indent=2, sort_keys=True, default=str)
+            fh.write("\n")
+        print(f"wrote json summary {args.json}")
+    return 0
+
+
+def _scan(root: str, config: Config, args) -> int:
+    return _aggregate(discover.traces_in(root), config, args, title=f"every run under {root}")
 
 
 def _verify(analysis) -> int:

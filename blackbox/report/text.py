@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from blackbox.analysis import Analysis
+from blackbox.describe import describe
 from blackbox.detectors.base import HIGH, LOW, MEDIUM
 
 _BADGE = {HIGH: "HIGH", MEDIUM: "MED ", LOW: "LOW "}
@@ -10,6 +11,11 @@ _BADGE = {HIGH: "HIGH", MEDIUM: "MED ", LOW: "LOW "}
 
 def _n(value: int) -> str:
     return f"{value:,}"
+
+
+def _tail(text: str, width: int) -> str:
+    """Keep the end of a long path, marking what was dropped."""
+    return text if len(text) <= width else "…" + text[-(width - 1):]
 
 
 def _usd(value: float) -> str:
@@ -40,6 +46,13 @@ def render(analysis: Analysis, max_findings: int | None = 25) -> str:
         f"{s['tool_failures']} failed · {_dur(s['active_seconds'])} active "
         f"over {_dur(s['span_seconds'])}"
     )
+    extra = []
+    if s.get("human_wait_seconds"):
+        extra.append(f"{_dur(s['human_wait_seconds'])} waiting on you")
+    if s.get("declined_calls"):
+        extra.append(f"{s['declined_calls']} call(s) you declined")
+    if extra:
+        add("  " + " · ".join(extra))
     if s["subagent_branches"]:
         add(f"  {s['subagent_branches']} subagent branch(es) separated from the main thread")
     if s["orphan_events"]:
@@ -74,6 +87,19 @@ def render(analysis: Analysis, max_findings: int | None = 25) -> str:
             f"  unpriced: {', '.join(c.unpriced_models)} "
             f"({_n(c.unpriced_tokens)} tokens not in the price table)"
         )
+
+    waste = analysis.wasted()
+    if waste["usd"] > 0:
+        parts = ", ".join(
+            f"{name.replace('_', ' ')} ${value:,.2f}"
+            for name, value in sorted(waste["by_detector"].items(), key=lambda kv: -kv[1])
+        )
+        add(
+            f"  at least ${waste['usd']:,.2f} ({waste['share_of_run'] * 100:.1f}%) went to work "
+            f"that did not advance the task"
+        )
+        add(f"    {parts}")
+        add("    a floor: it counts the turns that issued these calls, not the context they left behind")
     add("")
 
     if len(c.by_branch) > 1:
@@ -109,12 +135,82 @@ def render(analysis: Analysis, max_findings: int | None = 25) -> str:
     shown = analysis.findings if max_findings is None else analysis.findings[:max_findings]
     for f in shown:
         branch = "" if f.branch == "main" else f"  [{f.branch}]"
-        add(f"  [{_BADGE.get(f.severity, '?')}] {f.detector:<14} {f.title}{branch}")
+        usd = analysis.finding_usd(f)
+        price = f"  ${_usd(usd)}" if usd > 0 else ""
+        add(f"  [{_BADGE.get(f.severity, '?')}] {f.detector:<14} {f.title}{branch}{price}")
         add(f"         {f.detail}")
+        for ev_uid in f.evidence[:2]:
+            event = analysis.graph.by_uid.get(ev_uid)
+            if event is not None:
+                add(f"         · step {event.seq} line {event.source_line}  {describe(event)}")
     remaining = len(analysis.findings) - len(shown)
     if remaining > 0:
         add(f"  ... {remaining} more (use --max-findings all)")
     add("")
     add(f"  payload digest {analysis.digest()[:16]}  ·  detectors ran with no model calls")
     add("")
+    return "\n".join(out)
+
+
+# --- corpus ---------------------------------------------------------------
+
+
+def render_corpus(corpus, title: str = "ACROSS ALL RUNS") -> str:
+    """Summary across many traces."""
+    s = corpus.summary()
+    out: list[str] = []
+    add = out.append
+
+    add("")
+    add(f"AGENT BLACK BOX   {title}")
+    add(
+        f"  {s['runs']} run(s) · {_n(s['tool_calls'])} tool calls · "
+        f"{_n(s['findings'])} findings · {_dur(s['active_seconds'])} active"
+    )
+    if s["unreadable"]:
+        add(f"  note: {s['unreadable']} file(s) could not be read")
+    add("")
+
+    add(f"SPEND  ${s['total_usd']:,.2f} across {s['runs']} run(s)")
+    if s["wasted_usd"] > 0:
+        add(
+            f"  at least ${s['wasted_usd']:,.2f} ({s['wasted_share'] * 100:.1f}%) on work "
+            f"that did not advance the task"
+        )
+    add(
+        f"  cache hit rate {s['cache_hit_rate'] * 100:.1f}% of billed input · "
+        f"{_n(s['cache_write_1h_tokens'])} tokens of 1-hour cache writes"
+    )
+    add(f"  tool failure rate {s['failure_rate'] * 100:.1f}% ({_n(s['tool_failures'])} failed)")
+    add("")
+
+    if s["by_detector"]:
+        add("FINDINGS BY TYPE")
+        for name in sorted(s["by_detector"], key=lambda k: -s["by_detector"][k]):
+            usd = s["usd_by_detector"].get(name, 0.0)
+            money = f"   ${_usd(usd)}" if usd > 0 else ""
+            add(f"  {name:<16}{s['by_detector'][name]:>5}{money}")
+        add("")
+
+    if s["top_thrashed"]:
+        add("MOST REWRITTEN FILES")
+        for entry in s["top_thrashed"][:6]:
+            add(f"  {entry['writes']:>3}x  {_tail(entry['path'], 72)}")
+        add("")
+
+    if s["worst_loops"]:
+        add("WORST RETRY LOOPS")
+        for entry in s["worst_loops"][:5]:
+            add(f"  {entry['repeats']:>3}x  {entry['tool'][:40]:<40} {entry['run'][:20]}")
+        add("")
+
+    if s["worst_bloat"]:
+        add("MOST EXPENSIVE CONTEXT ADDITIONS  (estimated)")
+        for entry in s["worst_bloat"][:5]:
+            add(
+                f"  ~${entry['est_usd']:>8,.2f}  {_n(entry['est_tokens']):>9} tok  "
+                f"{entry['tool'][:30]:<30} {entry['run'][:18]}"
+            )
+        add("")
+
     return "\n".join(out)

@@ -7,6 +7,7 @@ then by a stable key, so adding a detector cannot reshuffle existing results.
 from __future__ import annotations
 
 from blackbox.detectors import (
+    context_bloat,
     contradictions,
     error_clusters,
     retry_loops,
@@ -16,7 +17,7 @@ from blackbox.detectors import (
 from blackbox.detectors.base import Config, Finding
 from blackbox.graph import Graph
 
-DETECTORS = (retry_loops, stalls, error_clusters, contradictions, thrash)
+DETECTORS = (retry_loops, stalls, error_clusters, contradictions, thrash, context_bloat)
 
 __all__ = ["Config", "Finding", "DETECTORS", "run_all"]
 

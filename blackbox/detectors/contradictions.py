@@ -2,19 +2,29 @@
 
 Two patterns, both of which produce confidently wrong edits:
 
-* **Stale read** -- the same file is read twice, the contents differ, and
-  nothing in the run wrote to it in between. Something outside the agent moved
-  under it (a build step, a formatter, another agent), so any reasoning from
-  the first read was already void.
-* **Blind edit** -- a file is edited *in place* with no prior read of it in
-  the same branch. The agent is editing text it never looked at. Creating a
-  file with ``Write`` does not count: that is the normal case.
+* **Stale read** -- the same region of a file is read twice, the contents
+  differ, and nothing in the run wrote to it in between. Something outside the
+  agent moved under it (a build step, a formatter, another agent), so any
+  reasoning from the first read was already void.
+* **Blind edit** -- a file is edited in place with no prior read *and no prior
+  write* in the same branch. The agent is changing text it has never seen.
 
-Read digests come from the result payload, so a read whose result is missing
-is skipped rather than assumed unchanged.
+Both rules were narrowed after running against real traces, where the naive
+versions were wrong essentially every time:
+
+* A ``Read`` can take ``offset`` and ``limit``. Reading lines 1-100 and then
+  101-200 returns different bytes from an unchanged file, so comparisons are
+  keyed by the region read, never by path alone. Without this the detector
+  reports a file as changing underneath an agent that merely paged through it.
+* ``Write`` establishes knowledge. An agent that created a file knows its
+  contents as surely as if it had read them, so a later in-place edit is not
+  blind. Without this, every file an agent builds from scratch and then tweaks
+  is reported as a blind edit.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 from blackbox.detectors.base import HIGH, MEDIUM, Config, Finding
 from blackbox.events import TOOL_CALL
@@ -23,13 +33,30 @@ from blackbox.toolinfo import is_edit_in_place, is_read, is_write, target_path
 
 NAME = "contradiction"
 
+READ = "read"
+WRITE = "write"
+EDIT = "edit"
+
+
+@dataclass(frozen=True)
+class _Entry:
+    seq: int
+    kind: str
+    digest: str
+    uid: str
+    region: tuple[object, object]
+
+
+def _region(tool_input: dict) -> tuple[object, object]:
+    """The slice of a file a read covers. ``(None, None)`` means the whole file."""
+    return (tool_input.get("offset"), tool_input.get("limit"))
+
 
 def run(graph: Graph, config: Config) -> list[Finding]:
     findings: list[Finding] = []
 
     for branch in graph.branches:
-        # path -> list of (seq, kind, digest, uid) in order
-        history: dict[str, list[tuple[int, str, str, str]]] = {}
+        history: dict[str, list[_Entry]] = {}
 
         for ev in graph.events:
             if ev.branch != branch.name or ev.kind != TOOL_CALL:
@@ -43,83 +70,95 @@ def run(graph: Graph, config: Config) -> list[Finding]:
                 if result is None:
                     continue
                 history.setdefault(path, []).append(
-                    (ev.seq, "read", result.output_digest(), ev.uid)
+                    _Entry(ev.seq, READ, result.output_digest(), ev.uid, _region(ev.tool_input))
                 )
             elif is_write(ev.tool_name):
-                kind = "edit" if is_edit_in_place(ev.tool_name) else "write"
-                history.setdefault(path, []).append((ev.seq, kind, "", ev.uid))
+                kind = EDIT if is_edit_in_place(ev.tool_name) else WRITE
+                history.setdefault(path, []).append(
+                    _Entry(ev.seq, kind, "", ev.uid, (None, None))
+                )
 
         for path in sorted(history):
             entries = history[path]
-
-            # --- stale reads ---------------------------------------------
-            last_read: tuple[int, str, str, str] | None = None
-            wrote_since_read = False
-            for entry in entries:
-                _, kind, digest, _uid = entry
-                if kind in ("write", "edit"):
-                    wrote_since_read = True
-                    continue
-                if last_read is not None and not wrote_since_read:
-                    if digest != last_read[2]:
-                        findings.append(
-                            Finding(
-                                detector=NAME,
-                                severity=HIGH,
-                                title=f"{_short(path)} changed between two reads with no write",
-                                detail=(
-                                    f"{path} was read at step {last_read[0]} and again at "
-                                    f"step {entry[0]} with different contents, and the run "
-                                    f"never wrote to it in between. Something outside the "
-                                    f"agent changed the file, so anything concluded from "
-                                    f"the first read was already stale."
-                                ),
-                                key=f"stale:{path}:{entry[0]:08d}",
-                                branch=branch.name,
-                                evidence=(last_read[3], entry[3]),
-                                metrics={
-                                    "path": path,
-                                    "kind": "stale_read",
-                                    "first_seq": last_read[0],
-                                    "second_seq": entry[0],
-                                },
-                            )
-                        )
-                last_read = entry
-                wrote_since_read = False
-
-            # --- blind edits ---------------------------------------------
-            seen_read = False
-            for seq, kind, _digest, uid in entries:
-                if kind == "read":
-                    seen_read = True
-                    continue
-                if kind != "edit":
-                    # A plain Write may legitimately create the file.
-                    continue
-                if not seen_read:
-                    findings.append(
-                        Finding(
-                            detector=NAME,
-                            severity=MEDIUM,
-                            title=f"{_short(path)} edited with no prior read",
-                            detail=(
-                                f"{path} was edited in place at step {seq} without being "
-                                f"read anywhere in this branch, so the agent changed "
-                                f"content it never saw here. A read in an earlier session "
-                                f"would not appear in this trace."
-                            ),
-                            key=f"blind:{path}:{seq:08d}",
-                            branch=branch.name,
-                            evidence=(uid,),
-                            metrics={"path": path, "kind": "blind_write", "seq": seq},
-                        )
-                    )
-                    # One report per path is enough; the pattern is the point.
-                    break
-                break
+            findings.extend(_stale_reads(path, entries, branch.name))
+            findings.extend(_blind_edits(path, entries, branch.name))
 
     return findings
+
+
+def _stale_reads(path: str, entries: list[_Entry], branch: str) -> list[Finding]:
+    """A region re-read with different bytes, with no write in between."""
+    found: list[Finding] = []
+    last_read: dict[tuple[object, object], _Entry] = {}
+
+    for entry in entries:
+        if entry.kind in (WRITE, EDIT):
+            # The run changed the file, so a differing re-read is expected.
+            last_read.clear()
+            continue
+
+        previous = last_read.get(entry.region)
+        if previous is not None and previous.digest != entry.digest:
+            found.append(
+                Finding(
+                    detector=NAME,
+                    severity=HIGH,
+                    title=f"{_short(path)} changed between two reads with no write",
+                    detail=(
+                        f"{path} was read at step {previous.seq} and again at step "
+                        f"{entry.seq} — the same region, different contents, and the run "
+                        f"never wrote to it in between. Something outside the agent "
+                        f"changed the file, so anything concluded from the first read "
+                        f"was already stale."
+                    ),
+                    key=f"stale:{path}:{entry.seq:08d}",
+                    branch=branch,
+                    evidence=(previous.uid, entry.uid),
+                    metrics={
+                        "path": path,
+                        "kind": "stale_read",
+                        "first_seq": previous.seq,
+                        "second_seq": entry.seq,
+                        "region_offset": entry.region[0],
+                        "region_limit": entry.region[1],
+                    },
+                )
+            )
+        last_read[entry.region] = entry
+
+    return found
+
+
+def _blind_edits(path: str, entries: list[_Entry], branch: str) -> list[Finding]:
+    """An in-place edit of a file the agent has neither read nor written."""
+    knows = False
+    for entry in entries:
+        if entry.kind in (READ, WRITE):
+            # Reading it or having authored it both count as knowing it.
+            knows = True
+            continue
+        if entry.kind != EDIT:
+            continue
+        if knows:
+            return []
+        return [
+            Finding(
+                detector=NAME,
+                severity=MEDIUM,
+                title=f"{_short(path)} edited with no prior read",
+                detail=(
+                    f"{path} was edited in place at step {entry.seq} without being read "
+                    f"or written anywhere in this branch, so the agent changed content "
+                    f"it has never seen. A read in an earlier session would not appear "
+                    f"in this trace."
+                ),
+                key=f"blind:{path}:{entry.seq:08d}",
+                branch=branch,
+                evidence=(entry.uid,),
+                metrics={"path": path, "kind": "blind_write", "seq": entry.seq},
+            )
+        ]
+    return []
 
 
 def _short(path: str, keep: int = 2) -> str:

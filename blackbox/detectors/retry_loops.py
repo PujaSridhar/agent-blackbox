@@ -6,17 +6,18 @@ prose descriptions differ. Repeats only count when they fall within a sliding
 window of tool calls -- running the same test command at the start and end of
 a long session is normal; running it four times in six calls is a loop.
 
-Repeating an *observation* is not a retry. Taking the same screenshot eight
-times is polling: the input is identical by design and the output is expected
-to differ. Those are reported, because the count is still worth seeing, but as
-polling and at low severity -- never as "the agent learned nothing".
+Repeating a call is not always retrying. Taking the same screenshot eight
+times is polling, and advancing a task list with the same payload ten times is
+bookkeeping: in both the input is identical by design. Those are reported,
+because the count is still worth seeing, but at low severity and never as
+"the agent learned nothing".
 """
 
 from __future__ import annotations
 
 from blackbox.detectors.base import HIGH, LOW, MEDIUM, Config, Finding
 from blackbox.graph import Graph
-from blackbox.toolinfo import is_observation
+from blackbox.toolinfo import repeats_by_design
 
 NAME = "retry_loop"
 
@@ -53,15 +54,16 @@ def run(graph: Graph, config: Config) -> list[Finding]:
                     continue
                 events = [calls[i] for i in cluster]
                 span = cluster[-1] - cluster[0] + 1
-                observing = is_observation(tool_name, events[0].tool_input)
+                expected = repeats_by_design(tool_name, events[0].tool_input)
 
-                if observing:
+                if expected:
                     severity = LOW
-                    title = f"{tool_name} polled {len(cluster)}x with identical input"
+                    title = f"{tool_name} repeated {len(cluster)}x with identical input"
                     detail = (
                         f"The same {tool_name} call ran {len(cluster)} times within "
-                        f"{span} tool calls. This tool observes rather than acts, so "
-                        f"identical input is expected -- it is polling, not a retry loop."
+                        f"{span} tool calls. This tool either observes or records "
+                        f"progress, so identical input is expected by design — it is "
+                        f"not a retry loop."
                     )
                 else:
                     severity = HIGH if len(cluster) >= 5 else MEDIUM
@@ -86,7 +88,7 @@ def run(graph: Graph, config: Config) -> list[Finding]:
                             "repeats": len(cluster),
                             "window_span": span,
                             "tool": tool_name,
-                            "kind": "polling" if observing else "retry_loop",
+                            "kind": "expected_repeat" if expected else "retry_loop",
                             "first_seq": events[0].seq,
                             "last_seq": events[-1].seq,
                         },

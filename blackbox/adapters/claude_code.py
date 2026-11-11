@@ -21,6 +21,7 @@ from dataclasses import replace
 from typing import Any
 
 from blackbox.adapters.base import Trace
+from blackbox.toolinfo import is_declined
 from blackbox.events import (
     ASSISTANT_MESSAGE,
     META,
@@ -234,7 +235,13 @@ def parse(path: str) -> Trace:
                     representative.setdefault(uid, f"{uid}:tr0")
                     for idx, block in enumerate(results):
                         is_error = block.get("is_error")
-                        flags = ("interrupted",) if interrupted else ()
+                        output = _result_text(block.get("content"))
+                        flags: tuple[str, ...] = ("interrupted",) if interrupted else ()
+                        # A human refusing a tool call is not a tool failure.
+                        # Left unflagged it pollutes the failure count and
+                        # clusters with real errors.
+                        if is_error and is_declined(output):
+                            flags = flags + ("declined",)
                         events.append(
                             Event(
                                 uid=f"{uid}:tr{idx}",
@@ -245,7 +252,7 @@ def parse(path: str) -> Trace:
                                 is_sidechain=sidechain,
                                 tool_use_id=block.get("tool_use_id"),
                                 tool_ok=(not bool(is_error)) if is_error is not None else None,
-                                tool_output=_result_text(block.get("content")),
+                                tool_output=output,
                                 flags=flags,
                                 raw_type="tool_result",
                                 source_line=lineno,
